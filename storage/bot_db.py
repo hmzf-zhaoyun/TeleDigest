@@ -4,6 +4,8 @@
 """
 import logging
 import aiosqlite
+import base64
+import hashlib
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
@@ -23,6 +25,7 @@ class GroupConfig:
     target_chat_id: Optional[int] = None  # 总结发送目标，None 表示发送到群组本身
     last_summary_time: Optional[datetime] = None
     last_message_id: int = 0  # 上次总结时的最后消息 ID
+    linuxdo_enabled: bool = True  # Linux.do 截图功能开关
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -36,6 +39,7 @@ class GroupConfig:
             'target_chat_id': self.target_chat_id,
             'last_summary_time': self.last_summary_time.isoformat() if self.last_summary_time else None,
             'last_message_id': self.last_message_id,
+            'linuxdo_enabled': self.linuxdo_enabled,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -111,6 +115,17 @@ class BotDatabase:
                 target_chat_id INTEGER,
                 last_summary_time TEXT,
                 last_message_id INTEGER DEFAULT 0,
+                linuxdo_enabled INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        # 用户 Token 存储表（加密存储）
+        await self._connection.execute('''
+            CREATE TABLE IF NOT EXISTS user_tokens (
+                user_id INTEGER PRIMARY KEY,
+                linuxdo_token TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -144,7 +159,21 @@ class BotDatabase:
             ON group_messages(message_date)
         ''')
 
+        # 数据库迁移：为旧表添加 linuxdo_enabled 字段
+        await self._migrate_add_linuxdo_enabled()
+
         await self._connection.commit()
+
+    async def _migrate_add_linuxdo_enabled(self) -> None:
+        """迁移：为 group_configs 表添加 linuxdo_enabled 字段"""
+        try:
+            await self._connection.execute(
+                'ALTER TABLE group_configs ADD COLUMN linuxdo_enabled INTEGER DEFAULT 1'
+            )
+            logger.info("数据库迁移：添加 linuxdo_enabled 字段成功")
+        except Exception:
+            # 字段已存在，忽略错误
+            pass
     
     async def get_group_config(self, group_id: int) -> Optional[GroupConfig]:
         """获取群组配置"""
@@ -175,10 +204,10 @@ class BotDatabase:
         """保存或更新群组配置"""
         config.updated_at = datetime.now()
         await self._connection.execute('''
-            INSERT INTO group_configs 
-                (group_id, group_name, enabled, schedule, target_chat_id, 
-                 last_summary_time, last_message_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO group_configs
+                (group_id, group_name, enabled, schedule, target_chat_id,
+                 last_summary_time, last_message_id, linuxdo_enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(group_id) DO UPDATE SET
                 group_name = excluded.group_name,
                 enabled = excluded.enabled,
@@ -186,13 +215,14 @@ class BotDatabase:
                 target_chat_id = excluded.target_chat_id,
                 last_summary_time = excluded.last_summary_time,
                 last_message_id = excluded.last_message_id,
+                linuxdo_enabled = excluded.linuxdo_enabled,
                 updated_at = excluded.updated_at
         ''', (
             config.group_id, config.group_name, int(config.enabled),
             config.schedule, config.target_chat_id,
             config.last_summary_time.isoformat() if config.last_summary_time else None,
-            config.last_message_id, config.created_at.isoformat(),
-            config.updated_at.isoformat()
+            config.last_message_id, int(config.linuxdo_enabled),
+            config.created_at.isoformat(), config.updated_at.isoformat()
         ))
         await self._connection.commit()
     
@@ -206,6 +236,13 @@ class BotDatabase:
     
     def _row_to_config(self, row: aiosqlite.Row) -> GroupConfig:
         """将数据库行转换为 GroupConfig 对象"""
+        # 兼容旧数据库，linuxdo_enabled 可能不存在
+        linuxdo_enabled = True
+        try:
+            linuxdo_enabled = bool(row['linuxdo_enabled'])
+        except (KeyError, IndexError):
+            pass
+
         return GroupConfig(
             group_id=row['group_id'],
             group_name=row['group_name'] or '',
@@ -214,6 +251,7 @@ class BotDatabase:
             target_chat_id=row['target_chat_id'],
             last_summary_time=datetime.fromisoformat(row['last_summary_time']) if row['last_summary_time'] else None,
             last_message_id=row['last_message_id'] or 0,
+            linuxdo_enabled=linuxdo_enabled,
             created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.now(),
             updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else datetime.now(),
         )
@@ -335,4 +373,70 @@ class BotDatabase:
             is_summarized=bool(row['is_summarized']),
             created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.now(),
         )
+
+    # ==================== Token 存储方法 ====================
+
+    @staticmethod
+    def _simple_encrypt(token: str, user_id: int) -> str:
+        """简单加密 Token（基于 user_id 的 XOR 混淆 + base64）"""
+        if not token:
+            return ""
+        # 用 user_id 生成密钥
+        key = hashlib.sha256(str(user_id).encode()).digest()
+        # XOR 混淆
+        encrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(token.encode('utf-8')))
+        return base64.b64encode(encrypted).decode('ascii')
+
+    @staticmethod
+    def _simple_decrypt(encrypted: str, user_id: int) -> str:
+        """解密 Token"""
+        if not encrypted:
+            return ""
+        try:
+            key = hashlib.sha256(str(user_id).encode()).digest()
+            encrypted_bytes = base64.b64decode(encrypted.encode('ascii'))
+            decrypted = bytes(b ^ key[i % len(key)] for i, b in enumerate(encrypted_bytes))
+            return decrypted.decode('utf-8')
+        except Exception:
+            return ""
+
+    async def save_user_token(self, user_id: int, linuxdo_token: str) -> None:
+        """保存用户的 Linux.do Token（加密存储）"""
+        encrypted_token = self._simple_encrypt(linuxdo_token, user_id)
+        await self._connection.execute('''
+            INSERT INTO user_tokens (user_id, linuxdo_token, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                linuxdo_token = excluded.linuxdo_token,
+                updated_at = excluded.updated_at
+        ''', (user_id, encrypted_token, datetime.now().isoformat()))
+        await self._connection.commit()
+        logger.info(f"用户 {user_id} 的 Token 已保存")
+
+    async def get_user_token(self, user_id: int) -> Optional[str]:
+        """获取用户的 Linux.do Token（解密返回）"""
+        async with self._connection.execute(
+            'SELECT linuxdo_token FROM user_tokens WHERE user_id = ?',
+            (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            if row and row['linuxdo_token']:
+                return self._simple_decrypt(row['linuxdo_token'], user_id)
+        return None
+
+    async def delete_user_token(self, user_id: int) -> bool:
+        """删除用户的 Token"""
+        cursor = await self._connection.execute(
+            'DELETE FROM user_tokens WHERE user_id = ?', (user_id,)
+        )
+        await self._connection.commit()
+        return cursor.rowcount > 0
+
+    async def set_group_linuxdo_enabled(self, group_id: int, enabled: bool) -> None:
+        """设置群组的 Linux.do 功能开关"""
+        await self._connection.execute(
+            'UPDATE group_configs SET linuxdo_enabled = ?, updated_at = ? WHERE group_id = ?',
+            (int(enabled), datetime.now().isoformat(), group_id)
+        )
+        await self._connection.commit()
 

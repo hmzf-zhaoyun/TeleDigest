@@ -26,6 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# 安装 Playwright 浏览器和系统依赖
+# 老王注：Playwright 需要先装系统依赖再装浏览器，顺序别搞反了
+RUN playwright install-deps chromium \
+    && playwright install chromium
+
 # 关键修改：把代码复制到 TeleDigest 子目录，这样 python -m TeleDigest 才能找到模块
 COPY . ./TeleDigest/
 

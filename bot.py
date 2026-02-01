@@ -21,12 +21,14 @@ try:
     from .scheduler import TaskManager
     from .summarizer import create_llm_client, SummaryResult
     from .handlers.admin import set_bot_instance, register_handlers
+    from .handlers.linuxdo_handler import set_linuxdo_bot_instance, register_linuxdo_handlers
 except ImportError:
     from config import BotConfig, get_bot_config
     from storage import BotDatabase, GroupConfig, GroupMessage
     from scheduler import TaskManager
     from summarizer import create_llm_client, SummaryResult
     from handlers.admin import set_bot_instance, register_handlers
+    from handlers.linuxdo_handler import set_linuxdo_bot_instance, register_linuxdo_handlers
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,9 @@ BOT_COMMANDS = [
     BotCommand("setschedule", "设置定时任务 - /setschedule <群组ID> <表达式>"),
     BotCommand("status", "查看所有群组状态"),
     BotCommand("summary", "手动触发总结 - /summary <群组ID>"),
+    BotCommand("set_linuxdo_token", "设置 Linux.do Token"),
+    BotCommand("delete_linuxdo_token", "删除 Linux.do Token"),
+    BotCommand("toggle_linuxdo", "开关群组 Linux.do 截图功能"),
 ]
 
 
@@ -66,6 +71,7 @@ class TelegramBot:
 
         # 设置全局实例引用
         set_bot_instance(self)
+        set_linuxdo_bot_instance(self)
 
         logger.info(f"机器人初始化完成: {self.config}")
 
@@ -84,6 +90,9 @@ class TelegramBot:
 
         # 注册命令处理器
         register_handlers(self._app)
+
+        # 注册 Linux.do 处理器
+        register_linuxdo_handlers(self._app)
 
         # 注册消息处理器（用于存储群组消息）
         self._app.add_handler(MessageHandler(

@@ -21,19 +21,29 @@ class LLMConfig:
 
 
 @dataclass
+class LinuxDoConfig:
+    """Linux.do 配置"""
+    api_token: str = ""  # 全局默认 Token（可选）
+    enabled: bool = True  # 功能总开关
+
+
+@dataclass
 class BotConfig:
     """机器人配置类"""
-    
+
     # 机器人基础配置
     bot_token: str = ""
     owner_ids: List[int] = field(default_factory=list)
-    
+
     # LLM 配置
     llm: LLMConfig = field(default_factory=LLMConfig)
-    
+
+    # Linux.do 配置
+    linuxdo: LinuxDoConfig = field(default_factory=LinuxDoConfig)
+
     # 数据库配置
     db_path: Path = field(default_factory=lambda: Path("data/bot.db"))
-    
+
     # 项目基础目录
     base_dir: Path = field(default_factory=lambda: Path(__file__).resolve().parent.parent)
     
@@ -125,11 +135,18 @@ def load_bot_config(env_file: Optional[str] = None) -> BotConfig:
     
     # 数据库路径
     db_path = Path(os.getenv('TG_BOT_DB_PATH', str(base_dir / 'data' / 'bot.db')))
-    
+
+    # Linux.do 配置
+    linuxdo_config = LinuxDoConfig(
+        api_token=os.getenv('LINUXDO_API_TOKEN', ''),
+        enabled=os.getenv('LINUXDO_ENABLED', 'true').lower() in ('true', '1', 'yes'),
+    )
+
     return BotConfig(
         bot_token=bot_token,
         owner_ids=owner_ids,
         llm=llm_config,
+        linuxdo=linuxdo_config,
         db_path=db_path,
         base_dir=base_dir,
     )
