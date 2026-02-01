@@ -25,9 +25,35 @@ _bot_instance: "TelegramBot" = None
 CALLBACK_GROUP_SELECT = "grp_sel:"      # 选择群组
 CALLBACK_GROUP_ENABLE = "grp_en:"       # 启用群组
 CALLBACK_GROUP_DISABLE = "grp_dis:"     # 禁用群组
-CALLBACK_GROUP_SCHEDULE = "grp_sch:"    # 设置定时
+CALLBACK_GROUP_SCHEDULE = "grp_sch:"    # 设置定时（显示预设选项）
 CALLBACK_GROUP_SUMMARY = "grp_sum:"     # 手动总结
 CALLBACK_GROUPS_LIST = "grp_list"       # 返回群组列表
+
+# 定时任务预设选项回调前缀
+CALLBACK_SCHEDULE_SET = "sch_set:"      # 设置预设定时，格式: sch_set:群组ID:表达式
+CALLBACK_SCHEDULE_CUSTOM = "sch_cus:"   # 显示自定义选项，格式: sch_cus:群组ID
+CALLBACK_SCHEDULE_INPUT = "sch_inp:"    # 提示输入Cron表达式，格式: sch_inp:群组ID
+
+# 预设定时选项配置 - 老王精心挑选的常用选项
+SCHEDULE_PRESETS = [
+    # (显示名称, 表达式, 描述)
+    ("每小时", "1h", "每隔1小时总结一次"),
+    ("每2小时", "2h", "每隔2小时总结一次"),
+    ("每4小时", "4h", "每隔4小时总结一次"),
+    ("每天早9点", "0 9 * * *", "每天早上9:00总结"),
+    ("每天晚8点", "0 20 * * *", "每天晚上20:00总结"),
+    ("每12小时", "12h", "每隔12小时总结一次"),
+]
+
+# 自定义时间选项
+SCHEDULE_CUSTOM_OPTIONS = [
+    ("30分钟", "30m"),
+    ("45分钟", "45m"),
+    ("90分钟", "90m"),
+    ("3小时", "3h"),
+    ("6小时", "6h"),
+    ("8小时", "8h"),
+]
 
 
 def set_bot_instance(bot: "TelegramBot") -> None:
@@ -434,21 +460,40 @@ async def _handle_group_disable(query, group_id: int) -> None:
 
 
 async def _handle_group_schedule(query, group_id: int) -> None:
-    """处理设置定时回调 - 提示用户使用命令"""
+    """处理设置定时回调 - 显示预设选项键盘，老王优化版，全可视化操作"""
     config = await _bot_instance.db.get_group_config(group_id)
     group_name = config.group_name if config else f"群组 {group_id}"
+    current_schedule = config.schedule if config else "1h"
 
-    await query.answer()
-    await query.message.reply_text(
+    # 构建预设选项键盘 - 每行2个按钮
+    keyboard = []
+    row = []
+    for i, (name, expr, _) in enumerate(SCHEDULE_PRESETS):
+        # 如果是当前选中的，加上标记
+        display_name = f"✓ {name}" if expr == current_schedule else name
+        row.append(InlineKeyboardButton(
+            display_name,
+            callback_data=f"{CALLBACK_SCHEDULE_SET}{group_id}:{expr}"
+        ))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:  # 处理剩余的按钮
+        keyboard.append(row)
+
+    # 添加自定义选项和返回按钮
+    keyboard.append([
+        InlineKeyboardButton("🔧 更多选项", callback_data=f"{CALLBACK_SCHEDULE_CUSTOM}{group_id}")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("« 返回群组", callback_data=f"{CALLBACK_GROUP_SELECT}{group_id}")
+    ])
+
+    await query.edit_message_text(
         f"⏰ **设置定时任务 - {group_name}**\n\n"
-        f"请发送以下命令设置定时：\n"
-        f"`/setschedule {group_id} <表达式>`\n\n"
-        f"**支持的格式：**\n"
-        f"• Cron: `0 * * * *` (每小时)\n"
-        f"• 间隔: `30m` / `2h` / `1d`\n\n"
-        f"**示例：**\n"
-        f"`/setschedule {group_id} 1h` - 每小时\n"
-        f"`/setschedule {group_id} 0 9 * * *` - 每天9点",
+        f"当前设置: `{current_schedule}`\n\n"
+        f"选择总结频率：",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
 
@@ -465,6 +510,100 @@ async def _handle_group_summary(query, group_id: int) -> None:
         await query.message.reply_text(f"✅ {group_name} 的总结已完成")
     except Exception as e:
         await query.message.reply_text(f"❌ 总结失败: {e}")
+
+
+async def _handle_schedule_set(query, group_id: int, schedule: str) -> None:
+    """处理设置定时任务 - 直接应用选中的预设或自定义选项"""
+    try:
+        from ..storage import GroupConfig as GC
+    except ImportError:
+        from storage import GroupConfig as GC
+
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        config = GC(group_id=group_id)
+
+    old_schedule = config.schedule
+    config.schedule = schedule
+    await _bot_instance.db.save_group_config(config)
+
+    # 如果已启用，更新定时任务
+    if config.enabled:
+        await _bot_instance.task_manager.add_group_task(config)
+
+    # 找到对应的预设名称用于显示
+    schedule_name = schedule
+    for name, expr, _ in SCHEDULE_PRESETS:
+        if expr == schedule:
+            schedule_name = name
+            break
+    for name, expr in SCHEDULE_CUSTOM_OPTIONS:
+        if expr == schedule:
+            schedule_name = name
+            break
+
+    await query.answer(f"✅ 已设置为: {schedule_name}")
+
+    # 刷新定时设置页面，显示新的选中状态
+    await _handle_group_schedule(query, group_id)
+
+
+async def _handle_schedule_custom(query, group_id: int) -> None:
+    """处理显示自定义时间选项"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    group_name = config.group_name if config else f"群组 {group_id}"
+    current_schedule = config.schedule if config else "1h"
+
+    # 构建自定义选项键盘 - 每行3个按钮
+    keyboard = []
+    row = []
+    for name, expr in SCHEDULE_CUSTOM_OPTIONS:
+        display_name = f"✓ {name}" if expr == current_schedule else name
+        row.append(InlineKeyboardButton(
+            display_name,
+            callback_data=f"{CALLBACK_SCHEDULE_SET}{group_id}:{expr}"
+        ))
+        if len(row) == 3:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    # 添加输入Cron表达式选项和返回按钮
+    keyboard.append([
+        InlineKeyboardButton("📝 输入Cron表达式", callback_data=f"{CALLBACK_SCHEDULE_INPUT}{group_id}")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("« 返回常用选项", callback_data=f"{CALLBACK_GROUP_SCHEDULE}{group_id}")
+    ])
+
+    await query.edit_message_text(
+        f"🔧 **自定义时间 - {group_name}**\n\n"
+        f"当前设置: `{current_schedule}`\n\n"
+        f"选择时间间隔：",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+
+async def _handle_schedule_input(query, group_id: int) -> None:
+    """处理提示输入Cron表达式 - 这是唯一需要手动输入的地方"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    group_name = config.group_name if config else f"群组 {group_id}"
+
+    await query.answer()
+    await query.message.reply_text(
+        f"📝 **自定义Cron表达式 - {group_name}**\n\n"
+        f"请发送命令设置定时：\n"
+        f"`/setschedule {group_id} <表达式>`\n\n"
+        f"**Cron格式：** `分 时 日 月 周`\n"
+        f"• `0 9 * * *` - 每天早上9点\n"
+        f"• `0 */2 * * *` - 每2小时整点\n"
+        f"• `30 8 * * 1-5` - 工作日8:30\n"
+        f"• `0 9,18 * * *` - 每天9点和18点\n\n"
+        f"💡 大多数情况下，使用预设选项就够了！",
+        parse_mode='Markdown'
+    )
 
 
 async def _handle_groups_list(query) -> None:
@@ -485,7 +624,7 @@ async def _handle_groups_list(query) -> None:
 
 
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理所有 InlineKeyboard 回调"""
+    """处理所有 InlineKeyboard 回调 - 老王优化版，支持可视化定时设置"""
     query = update.callback_query
     user_id = query.from_user.id
 
@@ -516,6 +655,22 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif data.startswith(CALLBACK_GROUP_SUMMARY):
             group_id = int(data[len(CALLBACK_GROUP_SUMMARY):])
             await _handle_group_summary(query, group_id)
+
+        # 新增：定时任务预设选项处理
+        elif data.startswith(CALLBACK_SCHEDULE_SET):
+            # 格式: sch_set:群组ID:表达式
+            parts = data[len(CALLBACK_SCHEDULE_SET):].split(":", 1)
+            group_id = int(parts[0])
+            schedule = parts[1] if len(parts) > 1 else "1h"
+            await _handle_schedule_set(query, group_id, schedule)
+
+        elif data.startswith(CALLBACK_SCHEDULE_CUSTOM):
+            group_id = int(data[len(CALLBACK_SCHEDULE_CUSTOM):])
+            await _handle_schedule_custom(query, group_id)
+
+        elif data.startswith(CALLBACK_SCHEDULE_INPUT):
+            group_id = int(data[len(CALLBACK_SCHEDULE_INPUT):])
+            await _handle_schedule_input(query, group_id)
 
         elif data == CALLBACK_GROUPS_LIST:
             await _handle_groups_list(query)
