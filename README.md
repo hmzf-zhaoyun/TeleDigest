@@ -124,6 +124,118 @@ docker run -d \
 - 通过 Docker Volume 挂载，容器重建数据不丢失
 - 建议定期备份 `data` 目录
 
+### 方式三：Claw.cloud 云部署
+
+适合没有服务器的用户，推送镜像到 Docker Hub 后在 Claw.cloud 一键部署。
+
+#### 第一步：推送镜像到 Docker Hub
+
+```bash
+# 1. 登录 Docker Hub（没账号先去 https://hub.docker.com 注册）
+docker login
+
+# 2. 设置你的 Docker Hub 用户名
+# Windows CMD:
+set DOCKER_USERNAME=你的dockerhub用户名
+
+# Windows PowerShell:
+$env:DOCKER_USERNAME="你的dockerhub用户名"
+
+# Linux/Mac:
+export DOCKER_USERNAME=你的dockerhub用户名
+
+# 3. 运行推送脚本
+# Windows:
+scripts\docker-push.bat
+
+# Linux/Mac:
+chmod +x scripts/docker-push.sh
+./scripts/docker-push.sh
+```
+
+#### 第二步：在 Claw.cloud 部署
+
+1. 访问 [Claw.cloud](https://claw.cloud) 并登录
+2. 创建新应用，选择 **Container** 类型
+3. 填写镜像地址：`你的用户名/teledigest-bot:latest`
+4. 配置环境变量（重要！）：
+   ```
+   TG_BOT_TOKEN=你的机器人Token
+   TG_BOT_OWNER_ID=你的TelegramUserID
+   LLM_PROVIDER=openai
+   LLM_API_KEY=你的LLM_API密钥
+   LLM_MODEL=gpt-3.5-turbo
+   TG_BOT_DB_PATH=/app/data/bot.db
+   ```
+5. 配置持久化存储（可选但推荐）：
+   - 挂载路径：`/app/data`
+   - 用于保存 SQLite 数据库
+6. 点击部署，等待启动完成
+
+#### 手动构建并推送（不用脚本）
+
+```bash
+# 1. 构建镜像
+docker build -t 你的用户名/teledigest-bot:latest .
+
+# 2. 推送到 Docker Hub
+docker push 你的用户名/teledigest-bot:latest
+```
+
+### 方式四：GitHub Actions 自动构建（推荐懒人）
+
+老王我给你整了一套 CI/CD 流水线，代码一推送就自动构建镜像发到 Docker Hub，省得你每次手动搞！
+
+#### 配置步骤
+
+1. **在 GitHub 仓库设置 Secrets**（重要！）
+
+   进入仓库 → Settings → Secrets and variables → Actions → New repository secret
+
+   | Secret 名称 | 值 |
+   |-------------|-----|
+   | `DOCKERHUB_USERNAME` | 你的 Docker Hub 用户名 |
+   | `DOCKERHUB_TOKEN` | Docker Hub Access Token |
+
+2. **获取 Docker Hub Access Token**
+
+   - 登录 [Docker Hub](https://hub.docker.com)
+   - 点击头像 → Account Settings → Security → New Access Token
+   - 创建一个 Token，复制保存
+
+3. **推送代码触发构建**
+
+   ```bash
+   git add .
+   git commit -m "feat: 添加 CI/CD 自动构建"
+   git push origin master
+   ```
+
+#### 触发条件
+
+| 触发方式 | 说明 |
+|----------|------|
+| 推送到 `master`/`main` | 自动构建并打 `latest` 标签 |
+| 创建版本标签 `v*.*.*` | 自动构建并打版本标签（如 `v1.0.0` → `1.0.0`） |
+| 手动触发 | 在 Actions 页面点击 "Run workflow" |
+
+#### 发布新版本
+
+```bash
+# 打标签发布新版本
+git tag v1.0.0
+git push origin v1.0.0
+
+# 镜像会自动构建并推送：
+# - 你的用户名/teledigest-bot:1.0.0
+# - 你的用户名/teledigest-bot:1.0
+# - 你的用户名/teledigest-bot:latest
+```
+
+#### 查看构建状态
+
+在 GitHub 仓库页面点击 **Actions** 标签页，可以看到所有构建记录和日志。
+
 ## 使用流程
 
 1. **配置环境变量**: 填写 `.env` 文件
