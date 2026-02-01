@@ -1,0 +1,76 @@
+# Git相关
+.git
+.gitignore
+
+# Python缓存 - 这些垃圾文件不需要打包进镜像
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.venv/
+
+# IDE配置 - 这些是你本地的配置，别带到服务器上
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 环境变量文件 - 敏感信息，千万别打包进镜像！
+.env
+.env.local
+.env.*.local
+
+# 测试和覆盖率
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# 日志文件
+*.log
+logs/
+
+# 本地数据库文件 - 用volume挂载，别打包进镜像
+data/*.db
+
+# 文档和杂项
+*.md
+!README.md
+LICENSE
+.spec-workflow/
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini

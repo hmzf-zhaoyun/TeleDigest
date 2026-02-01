@@ -57,9 +57,72 @@ LLM_MODEL=gpt-3.5-turbo
 
 ## 运行
 
+### 方式一：直接运行
+
 ```bash
 python -m TeleDigest
 ```
+
+### 方式二：Docker 部署（推荐）
+
+老王强烈推荐用 Docker 部署，省心省力，一键搞定！
+
+#### 快速启动
+
+```bash
+# 1. 配置环境变量
+cp .env.example .env
+# 编辑 .env 填写你的配置
+
+# 2. 一键启动（自动构建镜像）
+docker-compose up -d
+
+# 3. 查看日志
+docker-compose logs -f
+```
+
+#### 常用命令
+
+```bash
+# 启动服务
+docker-compose up -d
+
+# 停止服务
+docker-compose down
+
+# 重启服务
+docker-compose restart
+
+# 查看运行状态
+docker-compose ps
+
+# 查看实时日志
+docker-compose logs -f
+
+# 重新构建镜像（代码更新后）
+docker-compose up -d --build
+```
+
+#### 手动构建镜像
+
+```bash
+# 构建镜像
+docker build -t teledigest-bot .
+
+# 运行容器
+docker run -d \
+  --name teledigest-bot \
+  --env-file .env \
+  -v $(pwd)/data:/app/data \
+  --restart unless-stopped \
+  teledigest-bot
+```
+
+#### 数据持久化
+
+- SQLite 数据库存储在 `./data/bot.db`
+- 通过 Docker Volume 挂载，容器重建数据不丢失
+- 建议定期备份 `data` 目录
 
 ## 使用流程
 

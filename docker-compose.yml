@@ -1,0 +1,52 @@
+# TeleDigest Docker Compose 配置
+# 老王出品，一键部署，省心省力
+
+version: '3.8'
+
+services:
+  teledigest-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: teledigest-bot
+    restart: unless-stopped
+
+    # 环境变量配置（二选一）
+    # 方式1: 使用 .env 文件（推荐）
+    env_file:
+      - .env
+
+    # 方式2: 直接在这里配置（取消注释并填写）
+    # environment:
+    #   - TG_BOT_TOKEN=your_bot_token_here
+    #   - TG_BOT_OWNER_ID=123456789
+    #   - LLM_PROVIDER=openai
+    #   - LLM_API_KEY=your_llm_api_key
+    #   - LLM_API_BASE=
+    #   - LLM_MODEL=gpt-3.5-turbo
+    #   - LLM_MAX_TOKENS=1000
+    #   - LLM_TEMPERATURE=0.7
+    #   - TG_BOT_DB_PATH=/app/data/bot.db
+
+    # 数据持久化 - 把SQLite数据库挂载出来，防止容器重建数据丢失
+    volumes:
+      - ./data:/app/data
+
+    # 日志配置
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    # 健康检查（可选，Telegram Bot没有HTTP端口，这里用进程检查）
+    # healthcheck:
+    #   test: ["CMD", "pgrep", "-f", "python"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+# 如果需要网络隔离，可以取消下面的注释
+# networks:
+#   default:
+#     name: teledigest-network
