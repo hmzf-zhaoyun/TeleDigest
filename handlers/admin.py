@@ -304,11 +304,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /start - 启动机器人
 /help - 显示此帮助信息
 
+**Linux.do 截图功能:**
+/set\_linuxdo\_token <token> - 设置你的 Token
+/delete\_linuxdo\_token - 删除你的 Token
+💡 发送 linux.do 链接会自动截图
+
 """
     if is_owner:
         help_text += """**管理命令 (仅主人可用):**
 /groups - 📋 交互式群组管理（推荐）
 /status - 查看所有群组的配置状态
+/toggle\_linuxdo - 开关群组截图功能
 
 **传统命令（支持直接输入群组ID）:**
 /enable <群组ID> - 启用群组的消息总结功能
