@@ -27,6 +27,8 @@ CALLBACK_GROUP_ENABLE = "grp_en:"       # 启用群组
 CALLBACK_GROUP_DISABLE = "grp_dis:"     # 禁用群组
 CALLBACK_GROUP_SCHEDULE = "grp_sch:"    # 设置定时（显示预设选项）
 CALLBACK_GROUP_SUMMARY = "grp_sum:"     # 手动总结
+CALLBACK_GROUP_SPOILER = "grp_spoiler:" # 剧透开关
+CALLBACK_GROUP_LINUXDO = "grp_linuxdo:" # Linux.do 截图开关
 CALLBACK_GROUPS_LIST = "grp_list"       # 返回群组列表
 
 # 定时任务预设选项回调前缀
@@ -308,13 +310,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 /set\_linuxdo\_token <token> - 设置你的 Token
 /delete\_linuxdo\_token - 删除你的 Token
 💡 发送 linux.do 链接会自动截图
+💡 开关请在 /groups 中设置
+
+**剧透模式:**
+💡 转发图片或文本消息会自动以剧透发送
+💡 开关请在 /groups 中设置
 
 """
     if is_owner:
         help_text += """**管理命令 (仅主人可用):**
 /groups - 📋 交互式群组管理（推荐）
 /status - 查看所有群组的配置状态
-/toggle\_linuxdo - 开关群组截图功能
 
 **传统命令（支持直接输入群组ID）:**
 /enable <群组ID> - 启用群组的消息总结功能
@@ -391,6 +397,8 @@ async def _handle_group_select(query, group_id: int) -> None:
 
     # 构建详情文本
     status_text = "✅ 已启用" if config.enabled else "⭕ 未启用"
+    spoiler_text = "✅ 已启用" if config.spoiler_enabled else "⭕ 未启用"
+    linuxdo_text = "✅ 已启用" if config.linuxdo_enabled else "⭕ 未启用"
     group_name = config.group_name or f"群组 {group_id}"
 
     detail_text = f"""📋 **群组详情**
@@ -400,6 +408,8 @@ async def _handle_group_select(query, group_id: int) -> None:
 **状态:** {status_text}
 **定时:** `{config.schedule}`
 **下次执行:** {next_run}
+**剧透模式:** {spoiler_text}
+**Linux.do 截图:** {linuxdo_text}
 """
     if config.last_summary_time:
         detail_text += f"**上次总结:** {config.last_summary_time.strftime('%Y-%m-%d %H:%M')}\n"
@@ -421,6 +431,17 @@ async def _handle_group_select(query, group_id: int) -> None:
     keyboard.append([
         InlineKeyboardButton("⏰ 设置定时", callback_data=f"{CALLBACK_GROUP_SCHEDULE}{group_id}"),
         InlineKeyboardButton("📝 立即总结", callback_data=f"{CALLBACK_GROUP_SUMMARY}{group_id}")
+    ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "⭕ 禁用剧透" if config.spoiler_enabled else "✅ 启用剧透",
+            callback_data=f"{CALLBACK_GROUP_SPOILER}{group_id}",
+        ),
+        InlineKeyboardButton(
+            "⭕ 禁用截图" if config.linuxdo_enabled else "✅ 启用截图",
+            callback_data=f"{CALLBACK_GROUP_LINUXDO}{group_id}",
+        ),
     ])
 
     # 返回列表按钮
@@ -462,6 +483,36 @@ async def _handle_group_disable(query, group_id: int) -> None:
     _bot_instance.task_manager.remove_group_task(group_id)
 
     await query.answer("⭕ 已禁用群组总结")
+    await _handle_group_select(query, group_id)
+
+
+async def _handle_group_spoiler(query, group_id: int) -> None:
+    """处理群组剧透开关回调"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        await query.answer("❌ 群组不存在", show_alert=True)
+        return
+
+    new_status = not config.spoiler_enabled
+    await _bot_instance.db.set_group_spoiler_enabled(group_id, new_status)
+
+    status_text = "✅ 已启用" if new_status else "⭕ 已禁用"
+    await query.answer(f"🫥 剧透模式{status_text}")
+    await _handle_group_select(query, group_id)
+
+
+async def _handle_group_linuxdo(query, group_id: int) -> None:
+    """处理群组 Linux.do 截图开关回调"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        await query.answer("❌ 群组不存在", show_alert=True)
+        return
+
+    new_status = not config.linuxdo_enabled
+    await _bot_instance.db.set_group_linuxdo_enabled(group_id, new_status)
+
+    status_text = "✅ 已启用" if new_status else "⭕ 已禁用"
+    await query.answer(f"📸 Linux.do 截图{status_text}")
     await _handle_group_select(query, group_id)
 
 
@@ -653,6 +704,14 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif data.startswith(CALLBACK_GROUP_DISABLE):
             group_id = int(data[len(CALLBACK_GROUP_DISABLE):])
             await _handle_group_disable(query, group_id)
+
+        elif data.startswith(CALLBACK_GROUP_SPOILER):
+            group_id = int(data[len(CALLBACK_GROUP_SPOILER):])
+            await _handle_group_spoiler(query, group_id)
+
+        elif data.startswith(CALLBACK_GROUP_LINUXDO):
+            group_id = int(data[len(CALLBACK_GROUP_LINUXDO):])
+            await _handle_group_linuxdo(query, group_id)
 
         elif data.startswith(CALLBACK_GROUP_SCHEDULE):
             group_id = int(data[len(CALLBACK_GROUP_SCHEDULE):])

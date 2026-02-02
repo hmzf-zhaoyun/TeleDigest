@@ -5,10 +5,12 @@ Linux.do 论坛文章截图处理器
 import re
 import logging
 import asyncio
+import base64
+import math
 from typing import Optional, TYPE_CHECKING, List
 
-from telegram import Update
-from telegram.ext import ContextTypes, MessageHandler, filters, CommandHandler, Application
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 if TYPE_CHECKING:
     try:
@@ -63,9 +65,10 @@ async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optiona
             browser = await p.chromium.launch(**launch_args)
 
             # 创建浏览器上下文
+            device_scale_factor = 2
             context = await browser.new_context(
                 viewport={'width': 1280, 'height': 800},
-                device_scale_factor=2,
+                device_scale_factor=device_scale_factor,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             )
             context.set_default_timeout(60000)
@@ -80,8 +83,29 @@ async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optiona
                 }])
 
             page = await context.new_page()
+            cdp_session = await context.new_cdp_session(page)
 
-            # 访问页面
+            def _normalize_clip(x: float, y: float, width: float, height: float, scale: float) -> dict:
+                safe_scale = float(scale) if scale and scale > 0 else 1.0
+                return {
+                    'x': max(0.0, math.floor(x)),
+                    'y': max(0.0, math.floor(y)),
+                    'width': max(1.0, math.ceil(width)),
+                    'height': max(1.0, math.ceil(height)),
+                    'scale': safe_scale
+                }
+
+            async def _capture_cdp(clip: Optional[dict] = None) -> bytes:
+                params = {
+                    'format': 'png',
+                    'fromSurface': True,
+                    'captureBeyondViewport': True
+                }
+                if clip:
+                    params['clip'] = clip
+                result = await cdp_session.send('Page.captureScreenshot', params)
+                return base64.b64decode(result['data'])
+
             logger.info(f"正在访问: {url}")
             await page.goto(url, wait_until='domcontentloaded', timeout=60000)
 
@@ -133,8 +157,6 @@ async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optiona
 
             await asyncio.sleep(0.5)
 
-            # 截图
-            logger.info("开始截图...")
             screenshots = []
 
             try:
@@ -147,8 +169,8 @@ async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optiona
                         el.scrollIntoView({ block: 'start' });
                         const rect = el.getBoundingClientRect();
                         return {
-                            x: rect.x + window.scrollX,
-                            y: rect.y + window.scrollY,
+                            x: rect.left + window.scrollX,
+                            y: rect.top + window.scrollY,
                             width: rect.width,
                             height: rect.height
                         };
@@ -159,57 +181,61 @@ async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optiona
 
                 element_height = element_rect['height']
                 element_width = element_rect['width']
+                element_x = element_rect['x']
+                element_y = element_rect['y']
+                scale_factor = device_scale_factor if device_scale_factor and device_scale_factor > 0 else 1.0
 
+                logger.info("页面已就绪，准备截图")
                 logger.info(f"元素尺寸: {element_width}x{element_height}px")
 
-                # 分段阈值
+                # 分段阈值（以设备像素为基准，按 scale 换算为 CSS 像素）
                 MAX_SINGLE_HEIGHT = 8000
                 SEGMENT_HEIGHT = 4000
+                safe_scale = scale_factor if scale_factor and scale_factor > 0 else 1.0
+                max_single_css_height = MAX_SINGLE_HEIGHT / safe_scale
+                segment_css_height = SEGMENT_HEIGHT / safe_scale
+                single_css_threshold = min(max_single_css_height, segment_css_height)
 
-                if element_height <= MAX_SINGLE_HEIGHT:
-                    # 使用 page.screenshot + clip（Playwright 原生 API，自动处理坐标）
-                    screenshot = await page.screenshot(
-                        type='png',
-                        clip={
-                            'x': element_rect['x'],
-                            'y': element_rect['y'],
-                            'width': element_width,
-                            'height': element_height
-                        },
-                        animations='disabled',
-                        timeout=30000
+                async def _get_scroll() -> dict:
+                    return await page.evaluate('() => ({ x: window.scrollX, y: window.scrollY })')
+
+                if element_height <= single_css_threshold:
+                    logger.info("截图模式: 单次 CDP")
+                    await page.evaluate('y => window.scrollTo(0, y)', element_y)
+                    await asyncio.sleep(0.1)
+                    scroll = await _get_scroll()
+                    clip = _normalize_clip(
+                        element_x - scroll['x'],
+                        element_y - scroll['y'],
+                        element_width,
+                        element_height,
+                        scale_factor
                     )
-                    screenshots.append(screenshot)
-                    logger.info("截图完成")
+                    screenshots.append(await _capture_cdp(clip))
                 else:
                     # 分段截图
-                    num_segments = int((element_height + SEGMENT_HEIGHT - 1) / SEGMENT_HEIGHT)
-                    logger.info(f"内容较长，分 {num_segments} 段截图")
+                    num_segments = int(math.ceil(element_height / segment_css_height))
+                    logger.info(f"截图模式: 分段 CDP ({num_segments} 段)")
 
                     for i in range(num_segments):
-                        seg_y = element_rect['y'] + i * SEGMENT_HEIGHT
-                        seg_height = min(SEGMENT_HEIGHT, element_height - i * SEGMENT_HEIGHT)
-
-                        screenshot = await page.screenshot(
-                            type='png',
-                            clip={
-                                'x': element_rect['x'],
-                                'y': seg_y,
-                                'width': element_width,
-                                'height': seg_height
-                            },
-                            animations='disabled',
-                            timeout=30000
+                        seg_y = element_y + i * segment_css_height
+                        seg_height = min(segment_css_height, element_height - i * segment_css_height)
+                        await page.evaluate('y => window.scrollTo(0, y)', seg_y)
+                        await asyncio.sleep(0.1)
+                        scroll = await _get_scroll()
+                        clip = _normalize_clip(
+                            element_x - scroll['x'],
+                            seg_y - scroll['y'],
+                            element_width,
+                            seg_height,
+                            scale_factor
                         )
-                        screenshots.append(screenshot)
-
-                    logger.info(f"分段截图完成，共 {len(screenshots)} 张")
+                        screenshots.append(await _capture_cdp(clip))
 
             except Exception as e:
                 logger.warning(f"元素截图失败: {e}，使用全页截图")
                 # 降级：全页截图
-                screenshot = await page.screenshot(type='png', full_page=True, timeout=30000)
-                screenshots.append(screenshot)
+                screenshots.append(await _capture_cdp())
 
             await browser.close()
 
@@ -346,8 +372,16 @@ async def delete_token_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await message.reply_text("❌ 机器人未初始化")
 
 
+CALLBACK_LINUXDO_GROUP_SELECT = "linuxdo_sel:"
+CALLBACK_LINUXDO_TOGGLE = "linuxdo_toggle:"
+CALLBACK_LINUXDO_LIST = "linuxdo_list"
+
+
 async def toggle_linuxdo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理 /toggle_linuxdo 命令（仅主人可用，控制群组开关）"""
+    """处理 /toggle_linuxdo 命令（仅私聊）"""
+    if not _bot_instance:
+        return
+
     user = update.effective_user
     chat = update.effective_chat
     message = update.effective_message
@@ -355,28 +389,148 @@ async def toggle_linuxdo_command(update: Update, context: ContextTypes.DEFAULT_T
     if not user or not chat or not message:
         return
 
-    # 权限检查
-    if not _bot_instance or not _bot_instance.config.is_owner(user.id):
+    if not _bot_instance.config.is_owner(user.id):
         await message.reply_text("⛔ 您没有权限执行此命令")
         return
 
-    # 只能在群组中使用
-    if chat.type not in ['group', 'supergroup']:
-        await message.reply_text("❌ 此命令只能在群组中使用")
+    if chat.type != "private":
+        await message.reply_text("请在私聊中使用此命令")
         return
 
-    # 获取当前配置
-    config = await _bot_instance.db.get_group_config(chat.id)
-    if not config:
-        await message.reply_text("❌ 群组未配置，请先发送消息让机器人记录群组")
+    groups = await _bot_instance.db.get_all_groups()
+    if not groups:
+        await message.reply_text("📋 暂无记录的群组")
         return
 
-    # 切换状态
+    keyboard = _build_linuxdo_groups_keyboard(groups)
+    await message.reply_text(
+        "📸 **选择要配置的群组：**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+
+
+def _build_linuxdo_groups_keyboard(groups) -> list:
+    """构建 Linux.do 群组列表键盘"""
+    keyboard = []
+    for config in groups:
+        status_emoji = "✅" if config.linuxdo_enabled else "⭕"
+        group_name = config.group_name or f"群组 {config.group_id}"
+        if len(group_name) > 25:
+            group_name = group_name[:22] + "..."
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{status_emoji} {group_name}",
+                callback_data=f"{CALLBACK_LINUXDO_GROUP_SELECT}{config.group_id}",
+            )
+        ])
+    return keyboard
+
+
+async def _handle_linuxdo_group_select(query, group_id: int) -> None:
+    """处理 Linux.do 群组选择回调"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        await query.answer("❌ 群组不存在", show_alert=True)
+        return
+
+    status_text = "✅ 已启用" if config.linuxdo_enabled else "⭕ 未启用"
+    group_name = config.group_name or f"群组 {group_id}"
+
+    detail_text = f"""📸 **Linux.do 截图设置**
+
+**名称:** {group_name}
+**ID:** `{group_id}`
+**状态:** {status_text}
+"""
+
+    keyboard = []
+    if config.linuxdo_enabled:
+        keyboard.append([
+            InlineKeyboardButton(
+                "⭕ 禁用截图",
+                callback_data=f"{CALLBACK_LINUXDO_TOGGLE}{group_id}",
+            )
+        ])
+    else:
+        keyboard.append([
+            InlineKeyboardButton(
+                "✅ 启用截图",
+                callback_data=f"{CALLBACK_LINUXDO_TOGGLE}{group_id}",
+            )
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("« 返回列表", callback_data=CALLBACK_LINUXDO_LIST)
+    ])
+
+    await query.edit_message_text(
+        detail_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+
+
+async def _handle_linuxdo_toggle(query, group_id: int) -> None:
+    """处理 Linux.do 开关回调"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        await query.answer("❌ 群组不存在", show_alert=True)
+        return
+
     new_status = not config.linuxdo_enabled
-    await _bot_instance.db.set_group_linuxdo_enabled(chat.id, new_status)
+    await _bot_instance.db.set_group_linuxdo_enabled(group_id, new_status)
 
     status_text = "✅ 已启用" if new_status else "⭕ 已禁用"
-    await message.reply_text(f"📸 Linux.do 截图功能: {status_text}")
+    await query.answer(f"📸 Linux.do 截图功能: {status_text}")
+    await _handle_linuxdo_group_select(query, group_id)
+
+
+async def _handle_linuxdo_groups_list(query) -> None:
+    """处理 Linux.do 群组列表回调"""
+    groups = await _bot_instance.db.get_all_groups()
+    if not groups:
+        await query.edit_message_text("📋 暂无记录的群组")
+        return
+
+    keyboard = _build_linuxdo_groups_keyboard(groups)
+    await query.edit_message_text(
+        "📸 **选择要配置的群组：**",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown",
+    )
+
+
+async def _handle_linuxdo_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 Linux.do 相关回调"""
+    if not _bot_instance:
+        return
+
+    query = update.callback_query
+    if not query:
+        return
+
+    user_id = query.from_user.id if query.from_user else None
+    if not user_id or not _bot_instance.config.is_owner(user_id):
+        await query.answer("⛔ 您没有权限执行此操作", show_alert=True)
+        return
+
+    data = query.data or ""
+
+    try:
+        if data.startswith(CALLBACK_LINUXDO_GROUP_SELECT):
+            group_id = int(data[len(CALLBACK_LINUXDO_GROUP_SELECT):])
+            await _handle_linuxdo_group_select(query, group_id)
+        elif data.startswith(CALLBACK_LINUXDO_TOGGLE):
+            group_id = int(data[len(CALLBACK_LINUXDO_TOGGLE):])
+            await _handle_linuxdo_toggle(query, group_id)
+        elif data == CALLBACK_LINUXDO_LIST:
+            await _handle_linuxdo_groups_list(query)
+        else:
+            await query.answer("未知操作")
+    except Exception as exc:
+        logger.error(f"处理 Linux.do 回调失败: {exc}")
+        await query.answer("❌ 操作失败", show_alert=True)
 
 
 def register_linuxdo_handlers(app: Application) -> None:
@@ -390,4 +544,3 @@ def register_linuxdo_handlers(app: Application) -> None:
     # 命令处理器
     app.add_handler(CommandHandler("set_linuxdo_token", set_token_command))
     app.add_handler(CommandHandler("delete_linuxdo_token", delete_token_command))
-    app.add_handler(CommandHandler("toggle_linuxdo", toggle_linuxdo_command))

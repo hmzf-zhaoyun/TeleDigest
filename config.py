@@ -42,6 +42,9 @@ class BotConfig:
     # Linux.do 配置
     linuxdo: LinuxDoConfig = field(default_factory=LinuxDoConfig)
 
+    # 剧透模式配置
+    spoiler_auto_delete_original: bool = False
+
     # 数据库配置
     db_path: Path = field(default_factory=lambda: Path("data/bot.db"))
 
@@ -144,11 +147,19 @@ def load_bot_config(env_file: Optional[str] = None) -> BotConfig:
         proxy=os.getenv('LINUXDO_PROXY', ''),
     )
 
+    # 剧透模式配置
+    spoiler_auto_delete_original = os.getenv('SPOILER_AUTO_DELETE_ORIGINAL', 'false').lower() in (
+        'true',
+        '1',
+        'yes',
+    )
+
     return BotConfig(
         bot_token=bot_token,
         owner_ids=owner_ids,
         llm=llm_config,
         linuxdo=linuxdo_config,
+        spoiler_auto_delete_original=spoiler_auto_delete_original,
         db_path=db_path,
         base_dir=base_dir,
     )

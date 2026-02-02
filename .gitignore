@@ -34,3 +34,7 @@ dist/
 build/
 *.egg-info/
 
+# 文档运行目录
+docs/current/
+
+

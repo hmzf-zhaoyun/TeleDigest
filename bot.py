@@ -22,6 +22,7 @@ try:
     from .summarizer import create_llm_client, SummaryResult
     from .handlers.admin import set_bot_instance, register_handlers
     from .handlers.linuxdo_handler import set_linuxdo_bot_instance, register_linuxdo_handlers
+    from .handlers.spoiler_handler import set_spoiler_bot_instance, register_spoiler_handlers
 except ImportError:
     from config import BotConfig, get_bot_config
     from storage import BotDatabase, GroupConfig, GroupMessage
@@ -29,6 +30,7 @@ except ImportError:
     from summarizer import create_llm_client, SummaryResult
     from handlers.admin import set_bot_instance, register_handlers
     from handlers.linuxdo_handler import set_linuxdo_bot_instance, register_linuxdo_handlers
+    from handlers.spoiler_handler import set_spoiler_bot_instance, register_spoiler_handlers
 
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,6 @@ BOT_COMMANDS = [
     BotCommand("summary", "手动触发总结 - /summary <群组ID>"),
     BotCommand("set_linuxdo_token", "设置 Linux.do Token"),
     BotCommand("delete_linuxdo_token", "删除 Linux.do Token"),
-    BotCommand("toggle_linuxdo", "开关群组 Linux.do 截图功能"),
 ]
 
 
@@ -72,6 +73,7 @@ class TelegramBot:
         # 设置全局实例引用
         set_bot_instance(self)
         set_linuxdo_bot_instance(self)
+        set_spoiler_bot_instance(self)
 
         logger.info(f"机器人初始化完成: {self.config}")
 
@@ -94,12 +96,16 @@ class TelegramBot:
         # 注册 Linux.do 处理器
         register_linuxdo_handlers(self._app)
 
+        # 注册剧透处理器
+        register_spoiler_handlers(self._app)
+
+
         # 注册消息处理器（用于存储群组消息）
         self._app.add_handler(MessageHandler(
             filters.ChatType.GROUPS & ~filters.COMMAND,
             self._on_group_message
         ))
-        
+
         # 启动机器人
         logger.info("机器人启动中...")
         await self._app.initialize()
@@ -118,7 +124,7 @@ class TelegramBot:
             logger.info("已自动设置 BotFather 命令列表")
         except Exception as e:
             logger.warning(f"设置命令列表失败: {e}")
-    
+
     async def stop(self) -> None:
         """停止机器人"""
         logger.info("正在停止机器人...")
@@ -223,7 +229,7 @@ class TelegramBot:
 
         except Exception as e:
             logger.error(f"保存消息失败: {e}")
-    
+
     async def run_summary(self, group_id: int) -> None:
         """
         执行消息总结任务

@@ -26,6 +26,7 @@ class GroupConfig:
     last_summary_time: Optional[datetime] = None
     last_message_id: int = 0  # 上次总结时的最后消息 ID
     linuxdo_enabled: bool = True  # Linux.do 截图功能开关
+    spoiler_enabled: bool = False  # 剧透模式开关
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -40,6 +41,7 @@ class GroupConfig:
             'last_summary_time': self.last_summary_time.isoformat() if self.last_summary_time else None,
             'last_message_id': self.last_message_id,
             'linuxdo_enabled': self.linuxdo_enabled,
+            'spoiler_enabled': self.spoiler_enabled,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -77,17 +79,17 @@ class GroupMessage:
 
 class BotDatabase:
     """机器人数据库管理类"""
-    
+
     def __init__(self, db_path: Path):
         """
         初始化数据库
-        
+
         Args:
             db_path: 数据库文件路径
         """
         self.db_path = db_path
         self._connection: Optional[aiosqlite.Connection] = None
-    
+
     async def connect(self) -> None:
         """连接数据库并初始化表结构"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,14 +97,14 @@ class BotDatabase:
         self._connection.row_factory = aiosqlite.Row
         await self._init_tables()
         logger.info(f"数据库已连接: {self.db_path}")
-    
+
     async def close(self) -> None:
         """关闭数据库连接"""
         if self._connection:
             await self._connection.close()
             self._connection = None
             logger.info("数据库连接已关闭")
-    
+
     async def _init_tables(self) -> None:
         """初始化数据库表"""
         # 群组配置表
@@ -116,6 +118,7 @@ class BotDatabase:
                 last_summary_time TEXT,
                 last_message_id INTEGER DEFAULT 0,
                 linuxdo_enabled INTEGER DEFAULT 1,
+                spoiler_enabled INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -162,6 +165,9 @@ class BotDatabase:
         # 数据库迁移：为旧表添加 linuxdo_enabled 字段
         await self._migrate_add_linuxdo_enabled()
 
+        # 数据库迁移：为旧表添加 spoiler_enabled 字段
+        await self._migrate_add_spoiler_enabled()
+
         await self._connection.commit()
 
     async def _migrate_add_linuxdo_enabled(self) -> None:
@@ -174,7 +180,19 @@ class BotDatabase:
         except Exception:
             # 字段已存在，忽略错误
             pass
-    
+
+    async def _migrate_add_spoiler_enabled(self) -> None:
+        """迁移：为 group_configs 表添加 spoiler_enabled 字段"""
+        try:
+            await self._connection.execute(
+                'ALTER TABLE group_configs ADD COLUMN spoiler_enabled INTEGER DEFAULT 0'
+            )
+            logger.info("数据库迁移：添加 spoiler_enabled 字段成功")
+        except Exception:
+            # 字段已存在，忽略错误
+            pass
+
+
     async def get_group_config(self, group_id: int) -> Optional[GroupConfig]:
         """获取群组配置"""
         async with self._connection.execute(
@@ -185,7 +203,7 @@ class BotDatabase:
             if row:
                 return self._row_to_config(row)
         return None
-    
+
     async def get_all_enabled_groups(self) -> List[GroupConfig]:
         """获取所有启用的群组配置"""
         async with self._connection.execute(
@@ -193,21 +211,21 @@ class BotDatabase:
         ) as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_config(row) for row in rows]
-    
+
     async def get_all_groups(self) -> List[GroupConfig]:
         """获取所有群组配置"""
         async with self._connection.execute('SELECT * FROM group_configs') as cursor:
             rows = await cursor.fetchall()
             return [self._row_to_config(row) for row in rows]
-    
+
     async def save_group_config(self, config: GroupConfig) -> None:
         """保存或更新群组配置"""
         config.updated_at = datetime.now()
         await self._connection.execute('''
             INSERT INTO group_configs
                 (group_id, group_name, enabled, schedule, target_chat_id,
-                 last_summary_time, last_message_id, linuxdo_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 last_summary_time, last_message_id, linuxdo_enabled, spoiler_enabled, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(group_id) DO UPDATE SET
                 group_name = excluded.group_name,
                 enabled = excluded.enabled,
@@ -216,16 +234,23 @@ class BotDatabase:
                 last_summary_time = excluded.last_summary_time,
                 last_message_id = excluded.last_message_id,
                 linuxdo_enabled = excluded.linuxdo_enabled,
+                spoiler_enabled = excluded.spoiler_enabled,
                 updated_at = excluded.updated_at
         ''', (
-            config.group_id, config.group_name, int(config.enabled),
-            config.schedule, config.target_chat_id,
+            config.group_id,
+            config.group_name,
+            int(config.enabled),
+            config.schedule,
+            config.target_chat_id,
             config.last_summary_time.isoformat() if config.last_summary_time else None,
-            config.last_message_id, int(config.linuxdo_enabled),
-            config.created_at.isoformat(), config.updated_at.isoformat()
+            config.last_message_id,
+            int(config.linuxdo_enabled),
+            int(config.spoiler_enabled),
+            config.created_at.isoformat(),
+            config.updated_at.isoformat()
         ))
         await self._connection.commit()
-    
+
     async def delete_group_config(self, group_id: int) -> bool:
         """删除群组配置"""
         cursor = await self._connection.execute(
@@ -233,13 +258,20 @@ class BotDatabase:
         )
         await self._connection.commit()
         return cursor.rowcount > 0
-    
+
     def _row_to_config(self, row: aiosqlite.Row) -> GroupConfig:
         """将数据库行转换为 GroupConfig 对象"""
         # 兼容旧数据库，linuxdo_enabled 可能不存在
         linuxdo_enabled = True
         try:
             linuxdo_enabled = bool(row['linuxdo_enabled'])
+        except (KeyError, IndexError):
+            pass
+
+        # 兼容旧数据库，spoiler_enabled 可能不存在
+        spoiler_enabled = False
+        try:
+            spoiler_enabled = bool(row['spoiler_enabled'])
         except (KeyError, IndexError):
             pass
 
@@ -252,6 +284,7 @@ class BotDatabase:
             last_summary_time=datetime.fromisoformat(row['last_summary_time']) if row['last_summary_time'] else None,
             last_message_id=row['last_message_id'] or 0,
             linuxdo_enabled=linuxdo_enabled,
+            spoiler_enabled=spoiler_enabled,
             created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.now(),
             updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else datetime.now(),
         )
@@ -439,4 +472,13 @@ class BotDatabase:
             (int(enabled), datetime.now().isoformat(), group_id)
         )
         await self._connection.commit()
+
+    async def set_group_spoiler_enabled(self, group_id: int, enabled: bool) -> None:
+        """设置群组的剧透模式开关"""
+        await self._connection.execute(
+            'UPDATE group_configs SET spoiler_enabled = ?, updated_at = ? WHERE group_id = ?',
+            (int(enabled), datetime.now().isoformat(), group_id)
+        )
+        await self._connection.commit()
+
 
