@@ -25,6 +25,7 @@ class LinuxDoConfig:
     """Linux.do 配置"""
     api_token: str = ""  # 全局默认 Token（可选）
     enabled: bool = True  # 功能总开关
+    proxy: str = ""  # 代理地址，如 http://127.0.0.1:7890
 
 
 @dataclass
@@ -140,6 +141,7 @@ def load_bot_config(env_file: Optional[str] = None) -> BotConfig:
     linuxdo_config = LinuxDoConfig(
         api_token=os.getenv('LINUXDO_API_TOKEN', ''),
         enabled=os.getenv('LINUXDO_ENABLED', 'true').lower() in ('true', '1', 'yes'),
+        proxy=os.getenv('LINUXDO_PROXY', ''),
     )
 
     return BotConfig(

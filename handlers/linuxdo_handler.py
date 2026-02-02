@@ -5,7 +5,7 @@ Linux.do 论坛文章截图处理器
 import re
 import logging
 import asyncio
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List
 
 from telegram import Update
 from telegram.ext import ContextTypes, MessageHandler, filters, CommandHandler, Application
@@ -35,34 +35,42 @@ def set_linuxdo_bot_instance(bot: "TelegramBot") -> None:
     _bot_instance = bot
 
 
-async def _take_screenshot(url: str, token: Optional[str] = None) -> Optional[bytes]:
+async def _take_screenshot(url: str, token: Optional[str] = None, proxy: Optional[str] = None) -> List[bytes]:
     """
     使用 Playwright 对 Linux.do 页面截图
 
     Args:
         url: 页面 URL
         token: Linux.do API Token（用于登录态访问）
+        proxy: 代理地址，如 http://127.0.0.1:7890
 
     Returns:
-        截图的 PNG 字节数据，失败返回 None
+        截图的 PNG 字节数据列表（长内容会分段截图），失败返回空列表
     """
     try:
         from playwright.async_api import async_playwright
     except ImportError:
         logger.error("Playwright 未安装，请运行: pip install playwright && playwright install chromium")
-        return None
+        return []
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # 配置浏览器启动参数
+            launch_args = {'headless': True}
+            if proxy:
+                launch_args['proxy'] = {'server': proxy}
+
+            browser = await p.chromium.launch(**launch_args)
 
             # 创建浏览器上下文
             context = await browser.new_context(
                 viewport={'width': 1280, 'height': 800},
+                device_scale_factor=2,
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             )
+            context.set_default_timeout(60000)
 
-            # 如果有 Token，设置 Cookie
+            # 设置 Cookie
             if token:
                 await context.add_cookies([{
                     'name': '_t',
@@ -74,33 +82,145 @@ async def _take_screenshot(url: str, token: Optional[str] = None) -> Optional[by
             page = await context.new_page()
 
             # 访问页面
-            await page.goto(url, wait_until='networkidle', timeout=30000)
+            logger.info(f"正在访问: {url}")
+            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
 
             # 等待内容加载
+            try:
+                await page.wait_for_selector('article#post_1', timeout=10000)
+            except Exception:
+                pass
+
             await asyncio.sleep(1)
 
-            # 尝试隐藏一些干扰元素
+            # 隐藏干扰元素并禁用动画
             await page.evaluate('''
                 () => {
-                    // 隐藏顶部导航栏的固定定位，避免遮挡
-                    const header = document.querySelector('header.d-header');
-                    if (header) header.style.position = 'absolute';
-                    // 隐藏底部悬浮元素
-                    const footer = document.querySelector('.footer-message');
-                    if (footer) footer.style.display = 'none';
+                    // 禁用动画
+                    const style = document.createElement('style');
+                    style.textContent = `
+                        *, *::before, *::after {
+                            animation: none !important;
+                            transition: none !important;
+                        }
+                    `;
+                    document.head.appendChild(style);
+
+                    // 隐藏干扰元素
+                    const selectors = [
+                        '.sidebar-wrapper', '#d-sidebar', 'header.d-header',
+                        '.footer-message', '.modal-outer-container', '.topic-footer-buttons',
+                        '.signup-cta', '.crawler-page-link', '.post-links-container'
+                    ];
+                    selectors.forEach(sel => {
+                        document.querySelectorAll(sel).forEach(el => el.style.display = 'none');
+                    });
+
+                    // 扩展内容区域
+                    const main = document.querySelector('#main-outlet');
+                    if (main) {
+                        main.style.maxWidth = '100%';
+                        main.style.padding = '16px';
+                    }
                 }
             ''')
 
+            # 等待网络空闲
+            try:
+                await page.wait_for_load_state('networkidle', timeout=10000)
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
             # 截图
-            screenshot = await page.screenshot(full_page=True, type='png')
+            logger.info("开始截图...")
+            screenshots = []
+
+            try:
+                post_element = page.locator('article#post_1').first
+                await post_element.wait_for(state='visible', timeout=5000)
+
+                # 滚动到元素并获取文档绝对坐标
+                element_rect = await post_element.evaluate('''
+                    el => {
+                        el.scrollIntoView({ block: 'start' });
+                        const rect = el.getBoundingClientRect();
+                        return {
+                            x: rect.x + window.scrollX,
+                            y: rect.y + window.scrollY,
+                            width: rect.width,
+                            height: rect.height
+                        };
+                    }
+                ''')
+
+                await asyncio.sleep(0.3)
+
+                element_height = element_rect['height']
+                element_width = element_rect['width']
+
+                logger.info(f"元素尺寸: {element_width}x{element_height}px")
+
+                # 分段阈值
+                MAX_SINGLE_HEIGHT = 8000
+                SEGMENT_HEIGHT = 4000
+
+                if element_height <= MAX_SINGLE_HEIGHT:
+                    # 使用 page.screenshot + clip（Playwright 原生 API，自动处理坐标）
+                    screenshot = await page.screenshot(
+                        type='png',
+                        clip={
+                            'x': element_rect['x'],
+                            'y': element_rect['y'],
+                            'width': element_width,
+                            'height': element_height
+                        },
+                        animations='disabled',
+                        timeout=30000
+                    )
+                    screenshots.append(screenshot)
+                    logger.info("截图完成")
+                else:
+                    # 分段截图
+                    num_segments = int((element_height + SEGMENT_HEIGHT - 1) / SEGMENT_HEIGHT)
+                    logger.info(f"内容较长，分 {num_segments} 段截图")
+
+                    for i in range(num_segments):
+                        seg_y = element_rect['y'] + i * SEGMENT_HEIGHT
+                        seg_height = min(SEGMENT_HEIGHT, element_height - i * SEGMENT_HEIGHT)
+
+                        screenshot = await page.screenshot(
+                            type='png',
+                            clip={
+                                'x': element_rect['x'],
+                                'y': seg_y,
+                                'width': element_width,
+                                'height': seg_height
+                            },
+                            animations='disabled',
+                            timeout=30000
+                        )
+                        screenshots.append(screenshot)
+
+                    logger.info(f"分段截图完成，共 {len(screenshots)} 张")
+
+            except Exception as e:
+                logger.warning(f"元素截图失败: {e}，使用全页截图")
+                # 降级：全页截图
+                screenshot = await page.screenshot(type='png', full_page=True, timeout=30000)
+                screenshots.append(screenshot)
 
             await browser.close()
-            logger.info(f"截图成功: {url}")
-            return screenshot
+
+            if screenshots:
+                logger.info(f"截图成功: {len(screenshots)} 张")
+
+            return screenshots
 
     except Exception as e:
         logger.error(f"截图失败 {url}: {e}")
-        return None
+        return []
 
 
 async def _handle_linuxdo_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -140,22 +260,28 @@ async def _handle_linuxdo_url(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 发送处理中提示
     processing_msg = await message.reply_text("📸 正在截图 Linux.do 文章...")
 
+    # 获取代理配置
+    proxy = _bot_instance.config.linuxdo.proxy
+
     # 处理每个 URL
     for url in urls[:3]:  # 最多处理 3 个链接
-        screenshot = await _take_screenshot(url, token)
+        screenshots = await _take_screenshot(url, token, proxy)
 
-        if screenshot:
+        if screenshots:
             try:
-                await message.reply_photo(
-                    photo=screenshot,
-                    caption=f"📄 {url}",
-                    reply_to_message_id=message.message_id
-                )
+                # 依次发送每张截图
+                for i, screenshot in enumerate(screenshots):
+                    caption = f"📸 Linux.do 截图 ({i+1}/{len(screenshots)})" if len(screenshots) > 1 else None
+                    await message.reply_photo(
+                        photo=screenshot,
+                        caption=caption,
+                        reply_to_message_id=message.message_id
+                    )
             except Exception as e:
                 logger.error(f"发送截图失败: {e}")
                 await message.reply_text(f"❌ 发送截图失败: {e}")
         else:
-            await message.reply_text(f"❌ 截图失败: {url}")
+            await message.reply_text(f"❌ 截图失败")
 
     # 删除处理中提示
     try:
