@@ -28,6 +28,7 @@ CALLBACK_GROUP_DISABLE = "grp_dis:"     # 禁用群组
 CALLBACK_GROUP_SCHEDULE = "grp_sch:"    # 设置定时（显示预设选项）
 CALLBACK_GROUP_SUMMARY = "grp_sum:"     # 手动总结
 CALLBACK_GROUP_SPOILER = "grp_spoiler:" # 剧透开关
+CALLBACK_GROUP_SPOILER_DEL = "grp_spdel:" # 剧透自动删除开关
 CALLBACK_GROUP_LINUXDO = "grp_linuxdo:" # Linux.do 截图开关
 CALLBACK_GROUPS_LIST = "grp_list"       # 返回群组列表
 
@@ -314,6 +315,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 **剧透模式:**
 💡 转发图片或文本消息会自动以剧透发送
+💡 发送 #nsfw 也会自动以剧透发送
+💡 转发消息会显示来源链接（如有）
+💡 可开启自动删除原消息
 💡 开关请在 /groups 中设置
 
 """
@@ -398,6 +402,7 @@ async def _handle_group_select(query, group_id: int) -> None:
     # 构建详情文本
     status_text = "✅ 已启用" if config.enabled else "⭕ 未启用"
     spoiler_text = "✅ 已启用" if config.spoiler_enabled else "⭕ 未启用"
+    spoiler_del_text = "✅ 已启用" if config.spoiler_auto_delete else "⭕ 未启用"
     linuxdo_text = "✅ 已启用" if config.linuxdo_enabled else "⭕ 未启用"
     group_name = config.group_name or f"群组 {group_id}"
 
@@ -409,6 +414,7 @@ async def _handle_group_select(query, group_id: int) -> None:
 **定时:** `{config.schedule}`
 **下次执行:** {next_run}
 **剧透模式:** {spoiler_text}
+**剧透自动删除:** {spoiler_del_text}
 **Linux.do 截图:** {linuxdo_text}
 """
     if config.last_summary_time:
@@ -438,6 +444,13 @@ async def _handle_group_select(query, group_id: int) -> None:
             "⭕ 禁用剧透" if config.spoiler_enabled else "✅ 启用剧透",
             callback_data=f"{CALLBACK_GROUP_SPOILER}{group_id}",
         ),
+        InlineKeyboardButton(
+            "⭕ 禁用自动删除" if config.spoiler_auto_delete else "✅ 启用自动删除",
+            callback_data=f"{CALLBACK_GROUP_SPOILER_DEL}{group_id}",
+        ),
+    ])
+
+    keyboard.append([
         InlineKeyboardButton(
             "⭕ 禁用截图" if config.linuxdo_enabled else "✅ 启用截图",
             callback_data=f"{CALLBACK_GROUP_LINUXDO}{group_id}",
@@ -498,6 +511,21 @@ async def _handle_group_spoiler(query, group_id: int) -> None:
 
     status_text = "✅ 已启用" if new_status else "⭕ 已禁用"
     await query.answer(f"🫥 剧透模式{status_text}")
+    await _handle_group_select(query, group_id)
+
+
+async def _handle_group_spoiler_del(query, group_id: int) -> None:
+    """处理群组剧透自动删除开关回调"""
+    config = await _bot_instance.db.get_group_config(group_id)
+    if config is None:
+        await query.answer("❌ 群组不存在", show_alert=True)
+        return
+
+    new_status = not config.spoiler_auto_delete
+    await _bot_instance.db.set_group_spoiler_auto_delete(group_id, new_status)
+
+    status_text = "✅ 已启用" if new_status else "⭕ 已禁用"
+    await query.answer(f"🗑️ 剧透自动删除{status_text}")
     await _handle_group_select(query, group_id)
 
 
@@ -704,6 +732,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif data.startswith(CALLBACK_GROUP_DISABLE):
             group_id = int(data[len(CALLBACK_GROUP_DISABLE):])
             await _handle_group_disable(query, group_id)
+
+        elif data.startswith(CALLBACK_GROUP_SPOILER_DEL):
+            group_id = int(data[len(CALLBACK_GROUP_SPOILER_DEL):])
+            await _handle_group_spoiler_del(query, group_id)
 
         elif data.startswith(CALLBACK_GROUP_SPOILER):
             group_id = int(data[len(CALLBACK_GROUP_SPOILER):])

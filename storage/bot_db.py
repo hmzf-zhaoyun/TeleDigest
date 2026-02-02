@@ -27,6 +27,7 @@ class GroupConfig:
     last_message_id: int = 0  # 上次总结时的最后消息 ID
     linuxdo_enabled: bool = True  # Linux.do 截图功能开关
     spoiler_enabled: bool = False  # 剧透模式开关
+    spoiler_auto_delete: bool = False  # 剧透模式自动删除原消息
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 
@@ -42,6 +43,7 @@ class GroupConfig:
             'last_message_id': self.last_message_id,
             'linuxdo_enabled': self.linuxdo_enabled,
             'spoiler_enabled': self.spoiler_enabled,
+            'spoiler_auto_delete': self.spoiler_auto_delete,
             'created_at': self.created_at.isoformat(),
             'updated_at': self.updated_at.isoformat(),
         }
@@ -119,6 +121,7 @@ class BotDatabase:
                 last_message_id INTEGER DEFAULT 0,
                 linuxdo_enabled INTEGER DEFAULT 1,
                 spoiler_enabled INTEGER DEFAULT 0,
+                spoiler_auto_delete INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
@@ -168,6 +171,9 @@ class BotDatabase:
         # 数据库迁移：为旧表添加 spoiler_enabled 字段
         await self._migrate_add_spoiler_enabled()
 
+        # 数据库迁移：为旧表添加 spoiler_auto_delete 字段
+        await self._migrate_add_spoiler_auto_delete()
+
         await self._connection.commit()
 
     async def _migrate_add_linuxdo_enabled(self) -> None:
@@ -188,6 +194,17 @@ class BotDatabase:
                 'ALTER TABLE group_configs ADD COLUMN spoiler_enabled INTEGER DEFAULT 0'
             )
             logger.info("数据库迁移：添加 spoiler_enabled 字段成功")
+        except Exception:
+            # 字段已存在，忽略错误
+            pass
+
+    async def _migrate_add_spoiler_auto_delete(self) -> None:
+        """迁移：为 group_configs 表添加 spoiler_auto_delete 字段"""
+        try:
+            await self._connection.execute(
+                'ALTER TABLE group_configs ADD COLUMN spoiler_auto_delete INTEGER DEFAULT 0'
+            )
+            logger.info("数据库迁移：添加 spoiler_auto_delete 字段成功")
         except Exception:
             # 字段已存在，忽略错误
             pass
@@ -224,8 +241,9 @@ class BotDatabase:
         await self._connection.execute('''
             INSERT INTO group_configs
                 (group_id, group_name, enabled, schedule, target_chat_id,
-                 last_summary_time, last_message_id, linuxdo_enabled, spoiler_enabled, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 last_summary_time, last_message_id, linuxdo_enabled, spoiler_enabled,
+                 spoiler_auto_delete, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(group_id) DO UPDATE SET
                 group_name = excluded.group_name,
                 enabled = excluded.enabled,
@@ -235,6 +253,7 @@ class BotDatabase:
                 last_message_id = excluded.last_message_id,
                 linuxdo_enabled = excluded.linuxdo_enabled,
                 spoiler_enabled = excluded.spoiler_enabled,
+                spoiler_auto_delete = excluded.spoiler_auto_delete,
                 updated_at = excluded.updated_at
         ''', (
             config.group_id,
@@ -246,6 +265,7 @@ class BotDatabase:
             config.last_message_id,
             int(config.linuxdo_enabled),
             int(config.spoiler_enabled),
+            int(config.spoiler_auto_delete),
             config.created_at.isoformat(),
             config.updated_at.isoformat()
         ))
@@ -275,6 +295,13 @@ class BotDatabase:
         except (KeyError, IndexError):
             pass
 
+        # 兼容旧数据库，spoiler_auto_delete 可能不存在
+        spoiler_auto_delete = False
+        try:
+            spoiler_auto_delete = bool(row['spoiler_auto_delete'])
+        except (KeyError, IndexError):
+            pass
+
         return GroupConfig(
             group_id=row['group_id'],
             group_name=row['group_name'] or '',
@@ -285,6 +312,7 @@ class BotDatabase:
             last_message_id=row['last_message_id'] or 0,
             linuxdo_enabled=linuxdo_enabled,
             spoiler_enabled=spoiler_enabled,
+            spoiler_auto_delete=spoiler_auto_delete,
             created_at=datetime.fromisoformat(row['created_at']) if row['created_at'] else datetime.now(),
             updated_at=datetime.fromisoformat(row['updated_at']) if row['updated_at'] else datetime.now(),
         )
@@ -477,6 +505,14 @@ class BotDatabase:
         """设置群组的剧透模式开关"""
         await self._connection.execute(
             'UPDATE group_configs SET spoiler_enabled = ?, updated_at = ? WHERE group_id = ?',
+            (int(enabled), datetime.now().isoformat(), group_id)
+        )
+        await self._connection.commit()
+
+    async def set_group_spoiler_auto_delete(self, group_id: int, enabled: bool) -> None:
+        """设置群组的剧透自动删除原消息开关"""
+        await self._connection.execute(
+            'UPDATE group_configs SET spoiler_auto_delete = ?, updated_at = ? WHERE group_id = ?',
             (int(enabled), datetime.now().isoformat(), group_id)
         )
         await self._connection.commit()

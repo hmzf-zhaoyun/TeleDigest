@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from html import escape
 from typing import Optional
 
@@ -50,8 +51,81 @@ def _is_forwarded_message(message) -> bool:
     return bool(getattr(message, "forward_from", None) or getattr(message, "forward_from_chat", None))
 
 
+def _has_nsfw_tag(message) -> bool:
+    """判断消息是否包含 #nsfw 标签（不区分大小写）"""
+    if not message:
+        return False
+    text = message.text or message.caption or ""
+    return bool(re.search(r"(?i)#nsfw", text))
+
+
+def _get_forward_origin_info(message) -> Optional[str]:
+    """提取转发来源信息，返回带链接的 HTML 格式字符串"""
+    if not message:
+        return None
+
+    # 优先使用 forward_origin（Bot API 7.0+）
+    origin = getattr(message, "forward_origin", None)
+    if origin:
+        origin_type = getattr(origin, "type", None)
+        if origin_type == "channel":
+            chat = getattr(origin, "chat", None)
+            if chat:
+                title = escape(chat.title or "频道")
+                username = getattr(chat, "username", None)
+                msg_id = getattr(origin, "message_id", None)
+                if username and msg_id:
+                    return f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}</a>'
+                elif username:
+                    return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+                return f"📤 转发自: {title}"
+        elif origin_type == "chat":
+            chat = getattr(origin, "sender_chat", None)
+            if chat:
+                title = escape(chat.title or "群组")
+                username = getattr(chat, "username", None)
+                if username:
+                    return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+                return f"📤 转发自: {title}"
+        elif origin_type == "user":
+            user = getattr(origin, "sender_user", None)
+            if user:
+                name = escape(user.full_name or "用户")
+                username = getattr(user, "username", None)
+                if username:
+                    return f'📤 转发自: <a href="https://t.me/{username}">{name}</a>'
+                return f"📤 转发自: {name}"
+        elif origin_type == "hidden_user":
+            name = getattr(origin, "sender_user_name", None)
+            if name:
+                return f"📤 转发自: {escape(name)}"
+        return None
+
+    # 兼容旧版 Bot API（forward_from_chat / forward_from）
+    forward_chat = getattr(message, "forward_from_chat", None)
+    if forward_chat:
+        title = escape(forward_chat.title or "频道")
+        username = getattr(forward_chat, "username", None)
+        msg_id = getattr(message, "forward_from_message_id", None)
+        if username and msg_id:
+            return f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}</a>'
+        elif username:
+            return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+        return f"📤 转发自: {title}"
+
+    forward_from = getattr(message, "forward_from", None)
+    if forward_from:
+        name = escape(forward_from.full_name or "用户")
+        username = getattr(forward_from, "username", None)
+        if username:
+            return f'📤 转发自: <a href="https://t.me/{username}">{name}</a>'
+        return f"📤 转发自: {name}"
+
+    return None
+
+
 async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """处理转发消息的剧透转换"""
+    """处理转发或 #nsfw 标签消息的剧透转换"""
     if not _bot_instance:
         return
 
@@ -61,7 +135,7 @@ async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAUL
 
     if not message or not chat or chat.type not in ("group", "supergroup"):
         return
-    if not _is_forwarded_message(message):
+    if not _is_forwarded_message(message) and not _has_nsfw_tag(message):
         return
     if not await _is_admin_or_owner(chat, user):
         return
@@ -73,23 +147,35 @@ async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAUL
     text = message.text or message.caption or ""
     spoiler_text = _wrap_spoiler_html(text) if text else ""
 
+    # 提取转发来源信息
+    forward_info = _get_forward_origin_info(message)
+
+    # 构建最终消息文本
+    if forward_info and spoiler_text:
+        final_text = f"{forward_info}\n\n{spoiler_text}"
+    elif forward_info:
+        final_text = forward_info
+    else:
+        final_text = spoiler_text
+
     try:
         if message.photo:
             await chat.send_photo(
                 photo=message.photo[-1].file_id,
-                caption=spoiler_text if spoiler_text else None,
-                parse_mode="HTML" if spoiler_text else None,
+                caption=final_text if final_text else None,
+                parse_mode="HTML" if final_text else None,
                 has_spoiler=True,
             )
         else:
-            if not spoiler_text:
+            if not final_text:
                 return
             await chat.send_message(
-                text=spoiler_text,
+                text=final_text,
                 parse_mode="HTML",
             )
 
-        if _bot_instance.config.spoiler_auto_delete_original:
+        # 使用群组配置的 spoiler_auto_delete 开关
+        if config.spoiler_auto_delete:
             try:
                 await message.delete()
             except Exception:
@@ -267,7 +353,7 @@ def register_spoiler_handlers(application) -> None:
     """注册剧透处理器"""
     application.add_handler(
         MessageHandler(
-            filters.FORWARDED & (filters.PHOTO | filters.TEXT),
+            filters.PHOTO | filters.TEXT,
             _handle_forwarded_spoiler,
         ),
         group=9,
