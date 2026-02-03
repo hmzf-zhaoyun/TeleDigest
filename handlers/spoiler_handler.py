@@ -146,11 +146,8 @@ async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAUL
     if not config or not config.spoiler_enabled:
         return
 
-    html_text = message.text_html or message.caption_html or ""
     plain_text = message.text or message.caption or ""
-    if html_text:
-        spoiler_text = f"<tg-spoiler>{html_text}</tg-spoiler>"
-    elif plain_text:
+    if plain_text:
         spoiler_text = f"<tg-spoiler>{escape(plain_text)}</tg-spoiler>"
     else:
         spoiler_text = ""
@@ -384,4 +381,3 @@ def register_spoiler_handlers(application) -> None:
         ),
         group=9,
     )
-
