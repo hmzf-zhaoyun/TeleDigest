@@ -75,9 +75,11 @@ def _get_forward_origin_info(message) -> Optional[str]:
                 username = getattr(chat, "username", None)
                 msg_id = getattr(origin, "message_id", None)
                 if username and msg_id:
-                    return f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}</a>'
+                    return (
+                        f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}(@{username})</a>'
+                    )
                 elif username:
-                    return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+                    return f'📤 转发自: <a href="https://t.me/{username}">{title}(@{username})</a>'
                 return f"📤 转发自: {title}"
         elif origin_type == "chat":
             chat = getattr(origin, "sender_chat", None)
@@ -85,7 +87,7 @@ def _get_forward_origin_info(message) -> Optional[str]:
                 title = escape(chat.title or "群组")
                 username = getattr(chat, "username", None)
                 if username:
-                    return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+                    return f'📤 转发自: <a href="https://t.me/{username}">{title}(@{username})</a>'
                 return f"📤 转发自: {title}"
         elif origin_type == "user":
             user = getattr(origin, "sender_user", None)
@@ -93,7 +95,7 @@ def _get_forward_origin_info(message) -> Optional[str]:
                 name = escape(user.full_name or "用户")
                 username = getattr(user, "username", None)
                 if username:
-                    return f'📤 转发自: <a href="https://t.me/{username}">{name}</a>'
+                    return f'📤 转发自: <a href="https://t.me/{username}">{name}(@{username})</a>'
                 return f"📤 转发自: {name}"
         elif origin_type == "hidden_user":
             name = getattr(origin, "sender_user_name", None)
@@ -108,9 +110,9 @@ def _get_forward_origin_info(message) -> Optional[str]:
         username = getattr(forward_chat, "username", None)
         msg_id = getattr(message, "forward_from_message_id", None)
         if username and msg_id:
-            return f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}</a>'
+            return f'📤 转发自: <a href="https://t.me/{username}/{msg_id}">{title}(@{username})</a>'
         elif username:
-            return f'📤 转发自: <a href="https://t.me/{username}">{title}</a>'
+            return f'📤 转发自: <a href="https://t.me/{username}">{title}(@{username})</a>'
         return f"📤 转发自: {title}"
 
     forward_from = getattr(message, "forward_from", None)
@@ -118,7 +120,7 @@ def _get_forward_origin_info(message) -> Optional[str]:
         name = escape(forward_from.full_name or "用户")
         username = getattr(forward_from, "username", None)
         if username:
-            return f'📤 转发自: <a href="https://t.me/{username}">{name}</a>'
+            return f'📤 转发自: <a href="https://t.me/{username}">{name}(@{username})</a>'
         return f"📤 转发自: {name}"
 
     return None
@@ -144,17 +146,41 @@ async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAUL
     if not config or not config.spoiler_enabled:
         return
 
-    text = message.text or message.caption or ""
-    spoiler_text = _wrap_spoiler_html(text) if text else ""
+    html_text = message.text_html or message.caption_html or ""
+    plain_text = message.text or message.caption or ""
+    if html_text:
+        spoiler_text = f"<tg-spoiler>{html_text}</tg-spoiler>"
+    elif plain_text:
+        spoiler_text = f"<tg-spoiler>{escape(plain_text)}</tg-spoiler>"
+    else:
+        spoiler_text = ""
+
+    # 提取发送者信息
+    sender_info = None
+    if message.from_user:
+        sender_name = escape(message.from_user.full_name or "用户")
+        sender_username = getattr(message.from_user, "username", None)
+        if sender_username:
+            sender_info = f"发送者: {sender_name}(@{escape(sender_username)})"
+        else:
+            sender_info = f"发送者: {sender_name}"
 
     # 提取转发来源信息
     forward_info = _get_forward_origin_info(message)
 
     # 构建最终消息文本
-    if forward_info and spoiler_text:
-        final_text = f"{forward_info}\n\n{spoiler_text}"
-    elif forward_info:
-        final_text = forward_info
+    header_parts = []
+    if sender_info:
+        header_parts.append(sender_info)
+    if forward_info:
+        header_parts.append(forward_info.replace("📤 ", ""))
+
+    header_text = "\n".join(header_parts)
+
+    if header_text and spoiler_text:
+        final_text = f"{header_text}\n\n{spoiler_text}"
+    elif header_text:
+        final_text = header_text
     else:
         final_text = spoiler_text
 
