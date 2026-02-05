@@ -189,6 +189,13 @@ async def _handle_forwarded_spoiler(update: Update, context: ContextTypes.DEFAUL
                 parse_mode="HTML" if final_text else None,
                 has_spoiler=True,
             )
+        elif message.video:
+            await chat.send_video(
+                video=message.video.file_id,
+                caption=final_text if final_text else None,
+                parse_mode="HTML" if final_text else None,
+                has_spoiler=True,
+            )
         else:
             if not final_text:
                 return
@@ -376,7 +383,7 @@ def register_spoiler_handlers(application) -> None:
     """注册剧透处理器"""
     application.add_handler(
         MessageHandler(
-            filters.PHOTO | filters.TEXT,
+            filters.PHOTO | filters.VIDEO | filters.TEXT,
             _handle_forwarded_spoiler,
         ),
         group=9,
