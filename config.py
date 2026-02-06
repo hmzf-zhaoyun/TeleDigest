@@ -16,7 +16,8 @@ class LLMConfig:
     api_key: str = ""
     api_base: str = ""
     model: str = "gpt-3.5-turbo"
-    max_tokens: int = 1000
+    max_tokens: int = 2500
+
     temperature: float = 0.7
 
 
@@ -133,7 +134,7 @@ def load_bot_config(env_file: Optional[str] = None) -> BotConfig:
         api_key=os.getenv('LLM_API_KEY', ''),
         api_base=os.getenv('LLM_API_BASE', ''),
         model=os.getenv('LLM_MODEL', 'gpt-3.5-turbo'),
-        max_tokens=int(os.getenv('LLM_MAX_TOKENS', '1000')),
+        max_tokens=int(os.getenv('LLM_MAX_TOKENS', '2500')),
         temperature=float(os.getenv('LLM_TEMPERATURE', '0.7')),
     )
     

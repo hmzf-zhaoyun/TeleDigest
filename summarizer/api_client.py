@@ -90,6 +90,10 @@ class BaseLLMClient(ABC):
 2. 重要结论或决定
 3. 值得关注的信息
 
+重要约束：
+- 输出将通过 Telegram 单条消息发送，请将最终总结控制在 3200 个中文字符以内（包含标点和换行）。
+- 如果内容过多，请主动压缩表达、合并同类项，保留关键结论与高价值信息。
+
 总结："""
 
 
@@ -130,8 +134,16 @@ class OpenAIClient(BaseLLMClient):
                         return SummaryResult(content="", success=False, error=f"API 错误: {error_text}")
 
                     data = await resp.json()
-                    content = data["choices"][0]["message"]["content"]
-                    tokens = data.get("usage", {}).get("total_tokens", 0)
+                    choice0 = (data.get("choices") or [{}])[0]
+                    message0 = choice0.get("message") or {}
+                    content = message0.get("content") or ""
+                    finish_reason = choice0.get("finish_reason")
+
+                    usage = data.get("usage", {}) or {}
+                    tokens = usage.get("total_tokens", 0)
+
+                    if finish_reason and finish_reason != "stop":
+                        logger.warning(f"OpenAI 总结可能被截断: finish_reason={finish_reason}, max_tokens={self.config.max_tokens}")
 
                     return SummaryResult(
                         content=content,
@@ -180,8 +192,18 @@ class ClaudeClient(BaseLLMClient):
                         return SummaryResult(content="", success=False, error=f"API 错误: {error_text}")
 
                     data = await resp.json()
-                    content = data["content"][0]["text"]
+                    content_blocks = data.get("content", []) or []
+                    parts: List[str] = []
+                    for block in content_blocks:
+                        if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                            parts.append(block["text"])
+
+                    content = "".join(parts).strip()
                     tokens = data.get("usage", {}).get("input_tokens", 0) + data.get("usage", {}).get("output_tokens", 0)
+                    stop_reason = data.get("stop_reason")
+
+                    if stop_reason and stop_reason not in ("end_turn", "stop_sequence"):
+                        logger.warning(f"Claude 总结可能被截断: stop_reason={stop_reason}, max_tokens={self.config.max_tokens}")
 
                     return SummaryResult(
                         content=content,
@@ -264,7 +286,17 @@ class GeminiClient(BaseLLMClient):
                         logger.error(f"Gemini 未返回有效响应: {data}")
                         return SummaryResult(content="", success=False, error=f"Gemini 未返回有效响应: {data.get('error', data)}")
 
-                    content = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+                    candidate0 = candidates[0] if candidates else {}
+                    candidate_parts = candidate0.get("content", {}).get("parts", []) or []
+                    content = "".join(
+                        part.get("text", "")
+                        for part in candidate_parts
+                        if isinstance(part, dict) and part.get("text")
+                    ).strip()
+
+                    finish_reason = candidate0.get("finishReason")
+                    if finish_reason and finish_reason not in ("STOP", "FINISH_REASON_UNSPECIFIED"):
+                        logger.warning(f"Gemini 总结可能被截断: finish_reason={finish_reason}, max_tokens={self.config.max_tokens}")
 
                     # Gemini 的 token 统计
                     usage = data.get("usageMetadata", {})

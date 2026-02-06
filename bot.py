@@ -246,7 +246,7 @@ class TelegramBot:
 
         try:
             # 从数据库获取未总结的消息
-            messages = await self.db.get_unsummarized_messages(group_id, limit=500)
+            messages = await self.db.get_unsummarized_messages(group_id, limit=150)
 
             if not messages:
                 logger.info(f"群组 {group_id} 没有待总结的消息")
@@ -262,7 +262,20 @@ class TelegramBot:
                 logger.error(f"总结生成失败: {result.error}")
                 return
 
-            # 发送总结
+            # Telegram 单条消息发送长度约束：若过长则要求模型二次压缩（不做本地截断）
+            max_chars = 3200
+            if result.content and len(result.content) > max_chars:
+                compress_prompt = (
+                    "你刚才生成的总结将通过 Telegram 单条消息发送。"
+                    f"请将总结压缩到 {max_chars} 个中文字符以内（包含标点和换行），"
+                    "保留关键结论与高价值信息，输出为中文，使用要点列表。\n\n"
+                    "需要压缩的原总结如下：\n" + result.content
+                )
+                result2 = await self.llm_client.summarize([], prompt=compress_prompt)
+                if result2.success and result2.content:
+                    result = result2
+
+            # 发送总结（超长时由发送层分片，避免内容丢失）
             target_chat_id = config.target_chat_id or group_id
             await self._send_summary(target_chat_id, config.group_name, result, len(messages))
 
@@ -312,23 +325,61 @@ class TelegramBot:
                 .replace('>', '&gt;'))
 
     async def _send_summary(self, chat_id: int, group_name: str, result: SummaryResult, msg_count: int = 0) -> None:
-        """发送总结消息到群组"""
-        escaped_content = self._escape_html(result.content)
-        escaped_group_name = self._escape_html(group_name)
+        """发送总结消息到群组（默认单条，超长时分片发送，禁止截断）"""
 
-        # 可展开的折叠引用块，标题和内容都在里面
-        summary_text = f'<blockquote expandable>📊 {escaped_group_name}\n\n{escaped_content}</blockquote>'
+        def _chunk_text(text: str, max_len: int) -> List[str]:
+            if not text:
+                return [""]
+            chunks: List[str] = []
+            start = 0
+            while start < len(text):
+                end = min(start + max_len, len(text))
+                if end < len(text):
+                    nl = text.rfind("\n", start, end)
+                    if nl > start + int(max_len * 0.6):
+                        end = nl
+                chunks.append(text[start:end])
+                start = end
+            return [c for c in (ch.strip("\n") for ch in chunks) if c != ""] or [""]
+
+        escaped_group_name = self._escape_html(group_name)
+        escaped_content = self._escape_html(result.content)
+
+        # Telegram 单条消息限制较严格；HTML 还会额外增加标签字符
+        html_chunk_len = 3200
+        text_chunk_len = 3800
+
+        html_chunks = _chunk_text(escaped_content, html_chunk_len)
 
         try:
-            await self._bot.send_message(
-                chat_id=chat_id,
-                text=summary_text,
-                parse_mode='HTML'
-            )
+            if len(html_chunks) == 1:
+                summary_text = f'<blockquote expandable>📊 {escaped_group_name}\n\n{html_chunks[0]}</blockquote>'
+                await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=summary_text,
+                    parse_mode='HTML'
+                )
+                return
+
+            for idx, chunk in enumerate(html_chunks):
+                title = f"📊 {escaped_group_name}" if idx == 0 else f"📊 {escaped_group_name}（续{idx}）"
+                summary_text = f'<blockquote expandable>{title}\n\n{chunk}</blockquote>'
+                await self._bot.send_message(
+                    chat_id=chat_id,
+                    text=summary_text,
+                    parse_mode='HTML'
+                )
         except Exception as e:
             logger.error(f"发送总结消息失败: {e}")
             try:
-                await self._bot.send_message(chat_id=chat_id, text=f"📊 {group_name}\n\n{result.content}")
+                text_chunks = _chunk_text(result.content, text_chunk_len)
+                if len(text_chunks) == 1:
+                    await self._bot.send_message(chat_id=chat_id, text=f"📊 {group_name}\n\n{text_chunks[0]}")
+                    return
+
+                for idx, chunk in enumerate(text_chunks):
+                    title = f"📊 {group_name}" if idx == 0 else f"📊 {group_name}（续{idx}）"
+                    await self._bot.send_message(chat_id=chat_id, text=f"{title}\n\n{chunk}")
             except Exception as e2:
                 logger.error(f"发送纯文本也失败: {e2}")
 
