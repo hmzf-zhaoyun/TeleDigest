@@ -41,6 +41,7 @@ BOT_COMMANDS = [
     BotCommand("start", "启动机器人"),
     BotCommand("help", "显示帮助信息"),
     BotCommand("groups", "查看群组列表（交互式管理）"),
+    BotCommand("sync_groups", "同步已加入的群组到数据库"),
     BotCommand("enable", "启用群组总结 - /enable <群组ID>"),
     BotCommand("disable", "禁用群组总结 - /disable <群组ID>"),
     BotCommand("setschedule", "设置定时任务 - /setschedule <群组ID> <表达式>"),
@@ -112,10 +113,60 @@ class TelegramBot:
         await self._app.start()
         await self._app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
+        # 启动后尝试从历史 updates 重新发现群组并写入数据库（避免 DB 被清空导致群组"消失"）
+        await self.sync_joined_groups_from_updates()
+
         # 自动设置 BotFather 命令列表
         await self._setup_bot_commands()
 
         logger.info("机器人已启动，等待命令...")
+
+    async def sync_joined_groups_from_updates(self) -> dict:
+        """从 Telegram getUpdates 历史记录中同步群组到数据库。
+
+        说明：Telegram Bot API 无法可靠枚举“当前已加入的所有群组”。
+        这里采用从 updates 中提取群组/超群 chat 的方式，尽力恢复 DB 中缺失的 GroupConfig。
+
+        Returns:
+            dict: {"found": int, "created": int, "updated": int}
+        """
+        if not self._bot:
+            return {"found": 0, "created": 0, "updated": 0}
+
+        found = 0
+        created = 0
+        updated = 0
+
+        try:
+            updates = await self._bot.get_updates(limit=1000)
+        except Exception as e:
+            logger.warning(f"同步群组失败：无法读取 updates: {e}")
+            return {"found": 0, "created": 0, "updated": 0}
+
+        chats: dict[int, str] = {}
+        for upd in updates:
+            chat = getattr(upd, "effective_chat", None)
+            if not chat or chat.type not in ["group", "supergroup"]:
+                continue
+            chats[chat.id] = chat.title or ""
+
+        for group_id, title in chats.items():
+            found += 1
+            config = await self.db.get_group_config(group_id)
+            if config is None:
+                config = GroupConfig(group_id=group_id, group_name=title)
+                created += 1
+            else:
+                if title and title != config.group_name:
+                    config.group_name = title
+                    updated += 1
+
+            await self.db.save_group_config(config)
+
+        if found:
+            logger.info(f"群组同步完成: found={found}, created={created}, updated={updated}")
+
+        return {"found": found, "created": created, "updated": updated}
 
     async def _setup_bot_commands(self) -> None:
         """通过 Bot API 自动设置命令列表"""

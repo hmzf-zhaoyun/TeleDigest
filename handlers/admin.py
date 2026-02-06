@@ -254,6 +254,24 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 @owner_only
+async def sync_groups_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """处理 /sync_groups 命令 - 手动同步已加入的群组到数据库"""
+    if not _bot_instance:
+        await update.message.reply_text("❌ 机器人实例未初始化")
+        return
+
+    await update.message.reply_text("⏳ 正在同步群组记录...")
+    result = await _bot_instance.sync_joined_groups_from_updates()
+
+    await update.message.reply_text(
+        "✅ 群组同步完成\n"
+        f"发现群组: {result['found']}\n"
+        f"新增记录: {result['created']}\n"
+        f"更新名称: {result['updated']}"
+    )
+
+
+@owner_only
 async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """处理 /summary <群组ID> 命令 - 手动触发总结，无参数时显示群组选择列表"""
     if not context.args:
@@ -325,6 +343,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         help_text += """**管理命令 (仅主人可用):**
 /groups - 📋 交互式群组管理（推荐）
 /status - 查看所有群组的配置状态
+/sync_groups - 同步已加入群组到数据库
 
 **传统命令（支持直接输入群组ID）:**
 /enable <群组ID> - 启用群组的消息总结功能
@@ -786,6 +805,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("groups", groups_command))
+    app.add_handler(CommandHandler("sync_groups", sync_groups_command))
     app.add_handler(CommandHandler("enable", enable_command))
     app.add_handler(CommandHandler("disable", disable_command))
     app.add_handler(CommandHandler("setschedule", set_schedule_command))
