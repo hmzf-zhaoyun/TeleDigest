@@ -107,6 +107,14 @@ export async function updateGroupSchedule(env: Env, groupId: number, schedule: s
     .run();
 }
 
+export async function updateGroupName(env: Env, groupId: number, groupName: string): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE group_configs SET group_name = ?, updated_at = ? WHERE group_id = ?"
+  )
+    .bind(groupName, new Date().toISOString(), groupId)
+    .run();
+}
+
 export async function updateGroupSpoilerEnabled(
   env: Env,
   groupId: number,

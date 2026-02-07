@@ -6,6 +6,7 @@ import {
   CALLBACK_GROUP_SUMMARY,
   CALLBACK_PANEL_LIST,
   CALLBACK_PANEL_OPEN,
+  CALLBACK_PANEL_SYNC,
   CALLBACK_SCHEDULE_CUSTOM,
   CALLBACK_SCHEDULE_MENU,
   CALLBACK_SCHEDULE_SET,
@@ -16,7 +17,14 @@ import {
   SCHEDULE_CUSTOM_OPTIONS,
   SCHEDULE_PRESETS,
 } from "../constants";
-import type { Env, TelegramCallbackQuery, TelegramMessage, TelegramUpdate } from "../types";
+import type {
+  Env,
+  InlineKeyboardMarkup,
+  TelegramCallbackQuery,
+  TelegramChatMemberUpdated,
+  TelegramMessage,
+  TelegramUpdate,
+} from "../types";
 import { decodeCallbackValue, encodeCallbackValue, isOwnerUser, truncateLabel } from "../utils";
 import {
   clearAdminAction,
@@ -34,8 +42,9 @@ import {
 } from "../db";
 import { parseSchedule } from "../schedule";
 import { runSummaryForGroup } from "../summary";
-import { answerCallbackQuery, sendMessage } from "./api";
+import { answerCallbackQuery, editMessage, sendMessage } from "./api";
 import { handleSpoilerMessage } from "./spoiler";
+import { registerGroup, removeGroup, syncGroupsFromRegistry, updateRegistryFromConfig } from "../registry";
 
 export async function handleTelegramWebhook(
   request: Request,
@@ -89,6 +98,10 @@ async function processUpdate(update: TelegramUpdate, env: Env): Promise<void> {
   if (update.callback_query?.id) {
     await handleCallbackQuery(update.callback_query, env);
   }
+
+  if (update.my_chat_member) {
+    await handleMyChatMemberUpdate(update.my_chat_member, env);
+  }
 }
 
 async function handleMessage(message: TelegramMessage, env: Env): Promise<void> {
@@ -117,6 +130,7 @@ async function handleMessage(message: TelegramMessage, env: Env): Promise<void> 
   }
 
   if (message.chat.type === "group" || message.chat.type === "supergroup") {
+    await registerGroup(env, message.chat.id, message.chat.title || "");
     await handleSpoilerMessage(message, env);
     await saveGroupMessage(message, env);
   }
@@ -179,6 +193,13 @@ async function handleCommand(
     case "summary":
       await handleSummary(command.args, chatId, env, isOwner);
       return;
+    case "syncgroups":
+      if (!isOwner) {
+        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+        return;
+      }
+      await handleSyncGroups(chatId, env);
+      return;
     default:
       return;
   }
@@ -209,6 +230,7 @@ function buildHelpText(isOwner: boolean): string {
   base.push("/disable <群组ID> - 禁用群组总结");
   base.push("/setschedule <群组ID> <表达式> - 设置定时");
   base.push("/summary <群组ID> - 手动触发总结");
+  base.push("/syncgroups - 从注册表同步群组");
   base.push("");
   base.push("定时表达式格式:");
   base.push("Cron: 0 * * * *  (每小时)");
@@ -406,10 +428,11 @@ async function handleCallbackQuery(
     await answerCallbackQuery(env, callbackQuery.id, "无法识别会话", true);
     return;
   }
+  const messageId = callbackQuery.message?.message_id ?? null;
 
   const data = callbackQuery.data || "";
   try {
-    const handled = await processCallbackData(data, chatId, userId, env);
+    const handled = await processCallbackData(data, chatId, userId, env, messageId);
     if (!handled) {
       await answerCallbackQuery(env, callbackQuery.id, "未识别的操作", false);
       return;
@@ -426,9 +449,15 @@ async function processCallbackData(
   chatId: number,
   userId: number,
   env: Env,
+  messageId: number | null,
 ): Promise<boolean> {
   if (data === CALLBACK_PANEL_OPEN || data === CALLBACK_PANEL_LIST) {
-    await sendGroupList(env, chatId);
+    await sendGroupList(env, chatId, messageId);
+    return true;
+  }
+  if (data === CALLBACK_PANEL_SYNC) {
+    await handleSyncGroups(chatId, env, messageId);
+    await sendGroupList(env, chatId, messageId);
     return true;
   }
 
@@ -448,17 +477,17 @@ async function processCallbackData(
       return true;
     }
     if (action === "show") {
-      await sendGroupActions(env, chatId, groupId);
+      await sendGroupActions(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "enable") {
-      await setGroupEnabled(env, chatId, groupId, true);
-      await sendGroupActions(env, chatId, groupId);
+      await setGroupEnabled(env, chatId, groupId, true, messageId);
+      await sendGroupActions(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "disable") {
-      await setGroupEnabled(env, chatId, groupId, false);
-      await sendGroupActions(env, chatId, groupId);
+      await setGroupEnabled(env, chatId, groupId, false, messageId);
+      await sendGroupActions(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "summary") {
@@ -474,13 +503,13 @@ async function processCallbackData(
       return true;
     }
     if (action === "menu") {
-      await sendScheduleMenu(env, chatId, groupId);
+      await sendScheduleMenu(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "set") {
       const encoded = parts[3] || "";
       const schedule = decodeCallbackValue(encoded);
-      await applySchedule(env, chatId, groupId, schedule);
+      await applySchedule(env, chatId, groupId, schedule, messageId);
       return true;
     }
     if (action === "custom") {
@@ -501,15 +530,15 @@ async function processCallbackData(
       return true;
     }
     if (action === "menu") {
-      await sendSpoilerMenu(env, chatId, groupId);
+      await sendSpoilerMenu(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "toggle") {
-      await toggleSpoilerEnabled(env, chatId, groupId);
+      await toggleSpoilerEnabled(env, chatId, groupId, messageId);
       return true;
     }
     if (action === "delete") {
-      await toggleSpoilerAutoDelete(env, chatId, groupId);
+      await toggleSpoilerAutoDelete(env, chatId, groupId, messageId);
       return true;
     }
     return false;
@@ -564,10 +593,20 @@ async function handlePendingAdminAction(
   return false;
 }
 
-async function sendGroupList(env: Env, chatId: number): Promise<void> {
-  const groups = await getAllGroups(env);
+async function sendGroupList(
+  env: Env,
+  chatId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  let groups = await getAllGroups(env);
   if (!groups.length) {
-    await sendMessage(env, chatId, "📋 暂无配置的群组");
+    const syncResult = await syncGroupsFromRegistry(env);
+    if (!syncResult.unavailable) {
+      groups = await getAllGroups(env);
+    }
+  }
+  if (!groups.length) {
+    await sendPanelMessage(env, chatId, "📋 暂无配置的群组", messageId);
     return;
   }
 
@@ -578,18 +617,26 @@ async function sendGroupList(env: Env, chatId: number): Promise<void> {
     return [{ text: label, callback_data: `${CALLBACK_GROUP_SHOW}:${group.group_id}` }];
   });
   keyboard.push([
+    { text: "🔁 同步群组", callback_data: CALLBACK_PANEL_SYNC },
+  ]);
+  keyboard.push([
     { text: "🔄 刷新", callback_data: CALLBACK_PANEL_LIST },
   ]);
 
-  await sendMessage(env, chatId, "📋 群组列表（点击进入管理）", {
+  await sendPanelMessage(env, chatId, "📋 群组列表（点击进入管理）", messageId, {
     reply_markup: { inline_keyboard: keyboard },
   });
 }
 
-async function sendGroupActions(env: Env, chatId: number, groupId: number): Promise<void> {
+async function sendGroupActions(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
-    await sendMessage(env, chatId, "❌ 群组未配置或暂无消息记录");
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
     return;
   }
 
@@ -619,15 +666,20 @@ async function sendGroupActions(env: Env, chatId: number, groupId: number): Prom
     [{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }],
   ];
 
-  await sendMessage(env, chatId, lines.join("\n"), {
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
     reply_markup: { inline_keyboard: keyboard },
   });
 }
 
-async function sendScheduleMenu(env: Env, chatId: number, groupId: number): Promise<void> {
+async function sendScheduleMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
-    await sendMessage(env, chatId, "❌ 群组未配置或暂无消息记录");
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
     return;
   }
 
@@ -661,15 +713,20 @@ async function sendScheduleMenu(env: Env, chatId: number, groupId: number): Prom
     { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
   ]);
 
-  await sendMessage(env, chatId, lines.join("\n"), {
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
     reply_markup: { inline_keyboard: keyboard },
   });
 }
 
-async function sendSpoilerMenu(env: Env, chatId: number, groupId: number): Promise<void> {
+async function sendSpoilerMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
-    await sendMessage(env, chatId, "❌ 群组未配置或暂无消息记录");
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
     return;
   }
 
@@ -698,31 +755,43 @@ async function sendSpoilerMenu(env: Env, chatId: number, groupId: number): Promi
     [{ text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` }],
   ];
 
-  await sendMessage(env, chatId, lines.join("\n"), {
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
     reply_markup: { inline_keyboard: keyboard },
   });
 }
 
-async function toggleSpoilerEnabled(env: Env, chatId: number, groupId: number): Promise<void> {
+async function toggleSpoilerEnabled(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
-    await sendMessage(env, chatId, "❌ 群组未配置或暂无消息记录");
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
     return;
   }
   const next = Number(config.spoiler_enabled) !== 1;
   await updateGroupSpoilerEnabled(env, groupId, next);
-  await sendSpoilerMenu(env, chatId, groupId);
+  await updateRegistryFromConfig(env, { ...config, spoiler_enabled: next ? 1 : 0 });
+  await sendSpoilerMenu(env, chatId, groupId, messageId);
 }
 
-async function toggleSpoilerAutoDelete(env: Env, chatId: number, groupId: number): Promise<void> {
+async function toggleSpoilerAutoDelete(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
-    await sendMessage(env, chatId, "❌ 群组未配置或暂无消息记录");
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
     return;
   }
   const next = Number(config.spoiler_auto_delete) !== 1;
   await updateGroupSpoilerAutoDelete(env, groupId, next);
-  await sendSpoilerMenu(env, chatId, groupId);
+  await updateRegistryFromConfig(env, { ...config, spoiler_auto_delete: next ? 1 : 0 });
+  await sendSpoilerMenu(env, chatId, groupId, messageId);
 }
 
 async function setGroupEnabled(
@@ -730,6 +799,7 @@ async function setGroupEnabled(
   chatId: number,
   groupId: number,
   enabled: boolean,
+  messageId: number | null = null,
 ): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
@@ -737,13 +807,19 @@ async function setGroupEnabled(
   } else {
     await updateGroupEnabled(env, groupId, enabled);
   }
-  await sendMessage(
-    env,
-    chatId,
-    enabled
-      ? `✅ 已启用群组 ${groupId} 的消息总结功能`
-      : `✅ 已禁用群组 ${groupId} 的消息总结功能`,
-  );
+  const updatedConfig = await getGroupConfig(env, groupId);
+  if (updatedConfig) {
+    await updateRegistryFromConfig(env, updatedConfig);
+  }
+  if (!messageId) {
+    await sendMessage(
+      env,
+      chatId,
+      enabled
+        ? `✅ 已启用群组 ${groupId} 的消息总结功能`
+        : `✅ 已禁用群组 ${groupId} 的消息总结功能`,
+    );
+  }
 }
 
 async function applySchedule(
@@ -751,10 +827,16 @@ async function applySchedule(
   chatId: number,
   groupId: number,
   schedule: string,
+  messageId: number | null = null,
 ): Promise<boolean> {
   const trimmed = schedule.trim();
   if (!parseSchedule(trimmed)) {
-    await sendMessage(env, chatId, "❌ 无效的定时表达式，请重新输入或发送“取消”。");
+    await sendPanelMessage(
+      env,
+      chatId,
+      "❌ 无效的定时表达式，请重新输入或发送“取消”。",
+      messageId,
+    );
     return false;
   }
 
@@ -764,8 +846,34 @@ async function applySchedule(
   } else {
     await updateGroupSchedule(env, groupId, trimmed);
   }
-  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的定时: ${trimmed}`);
+  const updatedConfig = await getGroupConfig(env, groupId);
+  if (updatedConfig) {
+    await updateRegistryFromConfig(env, updatedConfig);
+  }
+  if (messageId) {
+    await sendScheduleMenu(env, chatId, groupId, messageId);
+    return true;
+  }
+  await sendPanelMessage(env, chatId, `✅ 已设置群组 ${groupId} 的定时: ${trimmed}`, null);
   return true;
+}
+
+async function sendPanelMessage(
+  env: Env,
+  chatId: number,
+  text: string,
+  messageId: number | null,
+  options: { parse_mode?: "HTML" | "Markdown"; reply_markup?: InlineKeyboardMarkup } = {},
+): Promise<void> {
+  if (messageId) {
+    try {
+      await editMessage(env, chatId, messageId, text, options);
+      return;
+    } catch (error) {
+      console.error("edit panel message failed", error);
+    }
+  }
+  await sendMessage(env, chatId, text, options);
 }
 
 async function runSummaryForGroupAndNotify(
@@ -784,4 +892,45 @@ async function runSummaryForGroupAndNotify(
   } else {
     await sendMessage(env, chatId, `❌ 总结失败: ${result.error || "未知错误"}`);
   }
+}
+
+async function handleMyChatMemberUpdate(
+  update: TelegramChatMemberUpdated,
+  env: Env,
+): Promise<void> {
+  const chat = update.chat;
+  if (chat.type !== "group" && chat.type !== "supergroup") {
+    return;
+  }
+  const status = update.new_chat_member?.status;
+  if (status === "member" || status === "administrator" || status === "creator") {
+    await registerGroup(env, chat.id, chat.title || "");
+    return;
+  }
+  if (status === "left" || status === "kicked") {
+    await removeGroup(env, chat.id);
+  }
+}
+
+async function handleSyncGroups(
+  chatId: number,
+  env: Env,
+  messageId: number | null = null,
+): Promise<void> {
+  const result = await syncGroupsFromRegistry(env);
+  if (result.unavailable) {
+    await sendPanelMessage(
+      env,
+      chatId,
+      "⚠️ 未配置 GROUPS_KV，无法同步群组。",
+      messageId,
+    );
+    return;
+  }
+  await sendPanelMessage(
+    env,
+    chatId,
+    `✅ 已同步群组：总计 ${result.total}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}`,
+    messageId,
+  );
 }

@@ -47,7 +47,8 @@
    npm run deploy:oneclick -- --env-file .env.worker
    ```
 
-说明：脚本会自动创建/绑定 D1、初始化 schema、写入 secrets、部署并设置 Webhook。
+说明：脚本会自动创建/绑定 D1 与 GROUPS_KV、初始化 schema、写入 secrets、部署并设置 Webhook。
+GROUPS_KV 用于保存机器人已加入的群组注册表，便于数据库丢失后同步恢复群组列表。
 
 ### 部署步骤（简版）
 

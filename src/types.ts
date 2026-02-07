@@ -3,6 +3,7 @@ export interface Env {
   TG_BOT_TOKEN: string;
   TG_BOT_OWNER_ID: string;
   TG_WEBHOOK_SECRET?: string;
+  GROUPS_KV?: KVNamespace;
   LLM_PROVIDER?: string;
   LLM_API_KEY?: string;
   LLM_API_BASE?: string;
@@ -18,6 +19,7 @@ export type TelegramUpdate = {
   channel_post?: TelegramMessage;
   edited_channel_post?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  my_chat_member?: TelegramChatMemberUpdated;
 };
 
 export type TelegramCallbackQuery = {
@@ -26,6 +28,7 @@ export type TelegramCallbackQuery = {
   data?: string;
   message?: {
     chat?: TelegramChat;
+    message_id?: number;
   };
 };
 
@@ -80,6 +83,19 @@ export type TelegramForwardOrigin = {
   sender_chat?: TelegramChat;
   sender_user?: TelegramUser;
   sender_user_name?: string;
+};
+
+export type TelegramChatMember = {
+  status: "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
+  user?: TelegramUser;
+};
+
+export type TelegramChatMemberUpdated = {
+  chat: TelegramChat;
+  from?: TelegramUser;
+  date?: number;
+  old_chat_member?: TelegramChatMember;
+  new_chat_member?: TelegramChatMember;
 };
 
 export type GroupConfigRow = {

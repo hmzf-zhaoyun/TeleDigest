@@ -9,3 +9,7 @@ database_id = "0586141a-8b5d-42a1-95d6-4cbf0ea72f02"
 
 [triggers]
 crons = ["*/1 * * * *"]
+
+[[kv_namespaces]]
+ binding = "GROUPS_KV"
+ id = "cb5ae52c0ec84c3c9bda352ad272714a"

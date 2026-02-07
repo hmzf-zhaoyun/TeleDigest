@@ -10,6 +10,7 @@ export const ADMIN_ACTION_TTL_MINUTES = 10;
 
 export const CALLBACK_PANEL_OPEN = "panel:open";
 export const CALLBACK_PANEL_LIST = "panel:list";
+export const CALLBACK_PANEL_SYNC = "panel:sync";
 export const CALLBACK_GROUP_SHOW = "grp:show";
 export const CALLBACK_GROUP_ENABLE = "grp:enable";
 export const CALLBACK_GROUP_DISABLE = "grp:disable";

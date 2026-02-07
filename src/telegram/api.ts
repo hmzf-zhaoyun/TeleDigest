@@ -63,6 +63,21 @@ export async function answerCallbackQuery(
   await telegramApi(env, "answerCallbackQuery", payload);
 }
 
+export async function editMessage(
+  env: Env,
+  chatId: number,
+  messageId: number,
+  text: string,
+  options: { parse_mode?: "HTML" | "Markdown"; reply_markup?: InlineKeyboardMarkup } = {},
+): Promise<void> {
+  await telegramApi(env, "editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text,
+    ...options,
+  });
+}
+
 export async function telegramApi(env: Env, method: string, payload: unknown): Promise<void> {
   const token = env.TG_BOT_TOKEN;
   if (!token) {
