@@ -2,14 +2,128 @@
 
 独立的 Telegram 机器人，提供定时消息读取与 AI 总结功能。
 
-## 架构特点
+## Cloudflare Workers 部署（无服务器）
+
+适合没有服务器的场景。该模式下会改为 Telegram Webhook + D1 数据库 + Cron 触发器。
+
+### 功能差异
+
+- 保留：消息收集、定时总结、管理员命令、LLM 总结
+- 暂停：Linux.do 截图（Worker 运行时不支持 Playwright）
+- 新增：交互式按钮管理（私聊面板）
+- 新增：剧透模式（主人开启后，转发或 #nsfw 触发，群内成员均可生效）
+
+### 一键部署（推荐）
+
+前置：已完成 `npx wrangler login`。
+
+1. 创建 `.env.worker`（不会提交到仓库）
+   ```env
+   TG_BOT_TOKEN=your_bot_token_here
+   TG_BOT_OWNER_ID=123456789
+   LLM_API_KEY=your_llm_api_key
+   # 可选
+   LLM_PROVIDER=openai-responses
+   LLM_MODEL=gpt-4o-mini
+   LLM_API_BASE=
+   LLM_MAX_TOKENS=1000
+   LLM_TEMPERATURE=0.7
+   TG_WEBHOOK_SECRET=
+   SCHEDULE_TZ_OFFSET_MINUTES=480
+   # 选填：自动拼接 Webhook URL
+   WORKERS_DEV_SUBDOMAIN=your-subdomain
+   # 或直接指定完整地址
+   # WEBHOOK_URL=https://<name>.<subdomain>.workers.dev/telegram
+   ```
+2. 运行脚本
+   ```bash
+   npm run deploy:oneclick
+   ```
+   额外参数示例：
+   ```bash
+   npm run deploy:oneclick -- --skip-webhook
+   npm run deploy:oneclick -- --webhook-url https://xxx.workers.dev/telegram
+   npm run deploy:oneclick -- --workers-subdomain your-subdomain
+   npm run deploy:oneclick -- --env-file .env.worker
+   ```
+
+说明：脚本会自动创建/绑定 D1、初始化 schema、写入 secrets、部署并设置 Webhook。
+
+### 部署步骤（简版）
+
+1. 安装依赖
+   ```bash
+   npm install
+   ```
+2. 登录 Cloudflare
+   ```bash
+   npx wrangler login
+   ```
+3. 创建 D1 数据库
+   ```bash
+   npx wrangler d1 create teledigest-db
+   ```
+   将输出的 `database_id` 写入 `wrangler.toml`
+4. 初始化数据库
+   ```bash
+   npm run db:init
+   ```
+5. （可选）本地测试 Cron 触发
+   ```bash
+   npx wrangler dev --test-scheduled
+   curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"
+   ```
+6. 配置环境变量（建议使用 Wrangler secrets）
+   ```bash
+   npx wrangler secret put TG_BOT_TOKEN
+   npx wrangler secret put TG_BOT_OWNER_ID
+   npx wrangler secret put LLM_PROVIDER
+   npx wrangler secret put LLM_API_KEY
+   npx wrangler secret put LLM_MODEL
+   npx wrangler secret put LLM_API_BASE
+   npx wrangler secret put LLM_MAX_TOKENS
+   npx wrangler secret put LLM_TEMPERATURE
+   npx wrangler secret put TG_WEBHOOK_SECRET
+   npx wrangler secret put SCHEDULE_TZ_OFFSET_MINUTES
+   ```
+   提示：使用 OpenAI 官方 API 推荐 `LLM_PROVIDER=openai-responses`；如使用 Chat Completions 兼容的代理/网关可选择 `openai`。
+7. 部署
+   ```bash
+   npm run deploy
+   ```
+8. 设置 Telegram Webhook（无需自有域名，使用 workers.dev）
+   ```bash
+   curl -X POST "https://api.telegram.org/bot<你的Token>/setWebhook" \
+     -d "url=https://<你的Worker名称>.<你的账户子域>.workers.dev/telegram" \
+     -d "secret_token=<你的TG_WEBHOOK_SECRET>"
+   ```
+
+### 重要说明
+
+- 定时调度由 Cron 触发器每分钟执行一次，实际任务频率由群组 schedule 决定
+- schedule 支持 `30m` / `2h` / `1d` 与 5 段 Cron 表达式
+- Cron 使用 UTC 时间，如需北京时间可设置 `SCHEDULE_TZ_OFFSET_MINUTES=480`
+
+### 管理面板使用（无需手动输入命令）
+
+1. 私聊机器人，点击「开始」或发送任意消息
+2. 点击「管理面板」按钮，选择群组进入管理
+3. 通过按钮启用/禁用、设置定时、手动总结
+4. 剧透模式：进入群组后点击“剧透设置”进行开关与自动删除配置（开启后群内成员触发）
+5. 自定义定时：点击“自定义表达式”，直接输入表达式即可
+
+## Legacy Python 版本（参考）
+
+以下内容适用于旧版 Python/SQLite 部署，保留作为参考；新部署请优先使用上面的 Worker 版本。
+
+### 架构特点
 
 - 🤖 **纯 Bot API**：使用 python-telegram-bot 库，无需 MTProto 客户端
 - 💾 **本地存储**：消息存储到 SQLite 数据库
 - ⏰ **定时总结**：使用 APScheduler 定时从数据库读取消息进行 AI 总结
 - 🔐 **完全独立**：不依赖用户账号，不影响已读状态
 
-## 功能特性
+### 功能特性
 
 - 🕐 **定时消息总结**: 支持为每个群组独立配置定时任务
 - 🤖 **多 LLM 支持**: 支持 OpenAI、Claude、Gemini 等多种 LLM API
@@ -20,7 +134,7 @@
 - ⚙️ **自动命令注册**: 启动时自动设置 BotFather 命令列表
 - 📸 **Linux.do 截图**: 自动识别 Linux.do 链接并截图发送
 
-## 安装
+### 安装
 
 ```bash
 # 克隆项目
@@ -35,7 +149,7 @@ cp .env.example .env
 # 编辑 .env 填写配置
 ```
 
-## 配置
+### 配置
 
 ### 必需配置
 
@@ -56,7 +170,7 @@ LLM_API_KEY=your_api_key
 LLM_MODEL=gpt-3.5-turbo
 ```
 
-## 运行
+### 运行
 
 ### 方式一：直接运行
 

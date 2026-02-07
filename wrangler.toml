@@ -1,0 +1,11 @@
+name = "teledigest-worker"
+main = "src/index.ts"
+compatibility_date = "2026-02-05"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "teledigest-db"
+database_id = "0586141a-8b5d-42a1-95d6-4cbf0ea72f02"
+
+[triggers]
+crons = ["*/1 * * * *"]
