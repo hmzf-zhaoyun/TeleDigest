@@ -3,6 +3,7 @@ import type { Env, GroupConfigRow } from "./types";
 import {
   getGroupConfig,
   insertGroupConfig,
+  isKvSyncWindowOpen,
   updateGroupEnabled,
   updateGroupName,
   updateGroupSchedule,
@@ -22,13 +23,20 @@ type GroupRegistryEntry = {
   updated_at: string;
 };
 
+async function canUseKv(env: Env): Promise<boolean> {
+  if (!env.GROUPS_KV) {
+    return false;
+  }
+  return isKvSyncWindowOpen(env);
+}
+
 export async function registerGroup(
   env: Env,
   groupId: number,
   groupName: string,
   meta: Partial<GroupRegistryEntry> = {},
 ): Promise<void> {
-  if (!env.GROUPS_KV) {
+  if (!(await canUseKv(env))) {
     return;
   }
   const key = `${GROUP_PREFIX}${groupId}`;
@@ -44,7 +52,7 @@ export async function registerGroup(
 }
 
 export async function removeGroup(env: Env, groupId: number): Promise<void> {
-  if (!env.GROUPS_KV) {
+  if (!(await canUseKv(env))) {
     return;
   }
   await env.GROUPS_KV.delete(`${GROUP_PREFIX}${groupId}`);
@@ -70,6 +78,9 @@ export async function syncGroupsFromRegistry(env: Env): Promise<{
   unavailable: boolean;
 }> {
   if (!env.GROUPS_KV) {
+    return { total: 0, inserted: 0, updated: 0, skipped: 0, unavailable: true };
+  }
+  if (!(await isKvSyncWindowOpen(env))) {
     return { total: 0, inserted: 0, updated: 0, skipped: 0, unavailable: true };
   }
 

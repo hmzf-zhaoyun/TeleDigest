@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS admin_actions (
   expires_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_group_summarized
 ON group_messages(group_id, is_summarized);
 

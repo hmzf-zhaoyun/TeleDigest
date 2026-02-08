@@ -7,6 +7,7 @@ export const TELEGRAM_SAFE_LIMIT = 3500;
 export const DEFAULT_LLM_MAX_TOKENS = 1000;
 export const DEFAULT_LLM_TEMPERATURE = 0.7;
 export const ADMIN_ACTION_TTL_MINUTES = 10;
+export const KV_SYNC_WINDOW_MS = 30_000;
 
 export const CALLBACK_PANEL_OPEN = "panel:open";
 export const CALLBACK_PANEL_LIST = "panel:list";

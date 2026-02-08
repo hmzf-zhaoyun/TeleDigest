@@ -9,11 +9,23 @@ import type {
 } from "./types";
 
 let schemaReady = false;
+let kvWindowUntil = 0;
+let kvWindowCheckedAt = 0;
+const KV_WINDOW_CACHE_MS = 5_000;
+const KV_SYNC_WINDOW_KEY = "kv_sync_window_until";
 
 export async function ensureSchema(env: Env): Promise<void> {
   if (schemaReady) return;
   schemaReady = true;
   try {
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`
+    ).run();
+
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS admin_actions (
         user_id INTEGER PRIMARY KEY,
@@ -196,6 +208,45 @@ export async function clearAdminAction(env: Env, userId: number): Promise<void> 
   await env.DB.prepare("DELETE FROM admin_actions WHERE user_id = ?")
     .bind(userId)
     .run();
+}
+
+export async function openKvSyncWindow(env: Env, durationMs: number): Promise<number> {
+  const until = Date.now() + durationMs;
+  kvWindowUntil = until;
+  kvWindowCheckedAt = Date.now();
+  await env.DB.prepare(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`
+  )
+    .bind(KV_SYNC_WINDOW_KEY, String(until), new Date().toISOString())
+    .run();
+  return until;
+}
+
+export async function isKvSyncWindowOpen(env: Env): Promise<boolean> {
+  const now = Date.now();
+  if (kvWindowUntil > now) {
+    return true;
+  }
+  if (now - kvWindowCheckedAt < KV_WINDOW_CACHE_MS) {
+    return false;
+  }
+  kvWindowCheckedAt = now;
+  const row = await env.DB.prepare(
+    "SELECT value FROM app_settings WHERE key = ?"
+  )
+    .bind(KV_SYNC_WINDOW_KEY)
+    .first<{ value: string }>();
+  const until = row?.value ? Number(row.value) : 0;
+  if (Number.isFinite(until) && until > now) {
+    kvWindowUntil = until;
+    return true;
+  }
+  kvWindowUntil = 0;
+  return false;
 }
 
 export async function getUnsummarizedMessages(

@@ -14,6 +14,7 @@ import {
   CALLBACK_SPOILER_MENU,
   CALLBACK_SPOILER_TOGGLE,
   DEFAULT_SCHEDULE,
+  KV_SYNC_WINDOW_MS,
   SCHEDULE_CUSTOM_OPTIONS,
   SCHEDULE_PRESETS,
 } from "../constants";
@@ -33,6 +34,7 @@ import {
   getAllGroups,
   getGroupConfig,
   insertGroupConfig,
+  openKvSyncWindow,
   saveGroupMessage,
   setAdminAction,
   updateGroupEnabled,
@@ -917,6 +919,7 @@ async function handleSyncGroups(
   env: Env,
   messageId: number | null = null,
 ): Promise<void> {
+  await openKvSyncWindow(env, KV_SYNC_WINDOW_MS);
   const result = await syncGroupsFromRegistry(env);
   if (result.unavailable) {
     await sendPanelMessage(
@@ -927,10 +930,11 @@ async function handleSyncGroups(
     );
     return;
   }
+  const windowSeconds = Math.round(KV_SYNC_WINDOW_MS / 1000);
   await sendPanelMessage(
     env,
     chatId,
-    `✅ 已同步群组：总计 ${result.total}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}`,
+    `✅ 已同步群组：总计 ${result.total}，新增 ${result.inserted}，更新 ${result.updated}，跳过 ${result.skipped}\n⏳ KV 读写窗口已开启 ${windowSeconds} 秒`,
     messageId,
   );
 }
