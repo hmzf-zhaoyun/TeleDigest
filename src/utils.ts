@@ -11,6 +11,18 @@ export function parseNumberEnv(
   return parsed;
 }
 
+export function parseDuration(value: string): number | null {
+  const trimmed = value.trim();
+  const match = /^(\d+)\s*([mhd])$/.exec(trimmed);
+  if (!match) return null;
+  const amount = parseInt(match[1], 10);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = match[2];
+  const multiplier =
+    unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : 86_400_000;
+  return amount * multiplier;
+}
+
 export function truncateLabel(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, Math.max(1, max - 3))}...`;

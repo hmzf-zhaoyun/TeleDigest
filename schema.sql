@@ -3,9 +3,13 @@ CREATE TABLE IF NOT EXISTS group_configs (
   group_name TEXT DEFAULT '',
   enabled INTEGER DEFAULT 0,
   schedule TEXT DEFAULT '0 * * * *',
+  leaderboard_schedule TEXT DEFAULT '1h',
+  leaderboard_enabled INTEGER DEFAULT 0,
+  leaderboard_window TEXT DEFAULT '1h',
   target_chat_id INTEGER,
   last_summary_time TEXT,
   last_message_id INTEGER DEFAULT 0,
+  last_leaderboard_time TEXT,
   spoiler_enabled INTEGER DEFAULT 0,
   spoiler_auto_delete INTEGER DEFAULT 0,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -18,6 +22,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
   group_id INTEGER NOT NULL,
   sender_id INTEGER NOT NULL,
   sender_name TEXT DEFAULT '',
+  sender_is_bot INTEGER DEFAULT 0,
   content TEXT DEFAULT '',
   message_date TEXT NOT NULL,
   has_media INTEGER DEFAULT 0,
@@ -46,3 +51,6 @@ ON group_messages(group_id, is_summarized);
 
 CREATE INDEX IF NOT EXISTS idx_messages_date
 ON group_messages(message_date);
+
+CREATE INDEX IF NOT EXISTS idx_messages_group_date
+ON group_messages(group_id, message_date);

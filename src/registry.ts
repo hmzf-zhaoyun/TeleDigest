@@ -1,10 +1,17 @@
-import { DEFAULT_SCHEDULE } from "./constants";
+import {
+  DEFAULT_LEADERBOARD_SCHEDULE,
+  DEFAULT_LEADERBOARD_WINDOW,
+  DEFAULT_SCHEDULE,
+} from "./constants";
 import type { Env, GroupConfigRow } from "./types";
 import {
   getGroupConfig,
   insertGroupConfig,
   isKvSyncWindowOpen,
   updateGroupEnabled,
+  updateGroupLeaderboardSchedule,
+  updateGroupLeaderboardEnabled,
+  updateGroupLeaderboardWindow,
   updateGroupName,
   updateGroupSchedule,
   updateGroupSpoilerAutoDelete,
@@ -18,6 +25,9 @@ type GroupRegistryEntry = {
   group_name: string;
   enabled?: number;
   schedule?: string;
+  leaderboard_schedule?: string;
+  leaderboard_enabled?: number;
+  leaderboard_window?: string;
   spoiler_enabled?: number;
   spoiler_auto_delete?: number;
   updated_at: string;
@@ -65,6 +75,9 @@ export async function updateRegistryFromConfig(
   await registerGroup(env, config.group_id, config.group_name || "", {
     enabled: Number(config.enabled) === 1 ? 1 : 0,
     schedule: config.schedule || DEFAULT_SCHEDULE,
+    leaderboard_schedule: config.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE,
+    leaderboard_enabled: Number(config.leaderboard_enabled) === 1 ? 1 : 0,
+    leaderboard_window: config.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW,
     spoiler_enabled: Number(config.spoiler_enabled) === 1 ? 1 : 0,
     spoiler_auto_delete: Number(config.spoiler_auto_delete) === 1 ? 1 : 0,
   });
@@ -109,6 +122,19 @@ export async function syncGroupsFromRegistry(env: Env): Promise<{
           Number(entry.enabled) === 1,
           entry.schedule || DEFAULT_SCHEDULE,
         );
+        if (entry.leaderboard_schedule) {
+          await updateGroupLeaderboardSchedule(env, entry.group_id, entry.leaderboard_schedule);
+        }
+        if (entry.leaderboard_window) {
+          await updateGroupLeaderboardWindow(env, entry.group_id, entry.leaderboard_window);
+        }
+        if (entry.leaderboard_enabled !== undefined) {
+          await updateGroupLeaderboardEnabled(
+            env,
+            entry.group_id,
+            Number(entry.leaderboard_enabled) === 1,
+          );
+        }
         if (Number(entry.spoiler_enabled) === 1) {
           await updateGroupSpoilerEnabled(env, entry.group_id, true);
         }
@@ -126,6 +152,27 @@ export async function syncGroupsFromRegistry(env: Env): Promise<{
       }
       if (entry.schedule && entry.schedule !== config.schedule) {
         await updateGroupSchedule(env, entry.group_id, entry.schedule);
+        didUpdate = true;
+      }
+      if (
+        entry.leaderboard_schedule &&
+        entry.leaderboard_schedule !== config.leaderboard_schedule
+      ) {
+        await updateGroupLeaderboardSchedule(env, entry.group_id, entry.leaderboard_schedule);
+        didUpdate = true;
+      }
+      if (
+        entry.leaderboard_window &&
+        entry.leaderboard_window !== config.leaderboard_window
+      ) {
+        await updateGroupLeaderboardWindow(env, entry.group_id, entry.leaderboard_window);
+        didUpdate = true;
+      }
+      if (
+        entry.leaderboard_enabled !== undefined &&
+        Number(entry.leaderboard_enabled) !== Number(config.leaderboard_enabled)
+      ) {
+        await updateGroupLeaderboardEnabled(env, entry.group_id, Number(entry.leaderboard_enabled) === 1);
         didUpdate = true;
       }
       if (entry.enabled !== undefined && Number(entry.enabled) !== Number(config.enabled)) {

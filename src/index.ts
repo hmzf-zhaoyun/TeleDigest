@@ -1,6 +1,8 @@
 import type { Env } from "./types";
+import { ensureSchema } from "./db";
 import { handleTelegramWebhook } from "./telegram/handlers";
 import { runScheduledSummaries } from "./schedule";
+import { runScheduledLeaderboards } from "./leaderboard";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -15,6 +17,9 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(runScheduledSummaries(env));
+    if (env.DB) {
+      await ensureSchema(env);
+    }
+    ctx.waitUntil(Promise.all([runScheduledSummaries(env), runScheduledLeaderboards(env)]));
   },
 };

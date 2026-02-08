@@ -59,12 +59,12 @@ export function parseSchedule(schedule: string): Schedule | null {
   return null;
 }
 
-function getScheduleTzOffsetMinutes(env: Env): number {
+export function getScheduleTzOffsetMinutes(env: Env): number {
   const value = parseNumberEnv(env.SCHEDULE_TZ_OFFSET_MINUTES, 0);
   return Math.trunc(value);
 }
 
-function isScheduleDue(
+export function isScheduleDue(
   schedule: Schedule,
   lastSummary: string | null,
   now: Date,

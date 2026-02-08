@@ -2,8 +2,16 @@ import {
   ADMIN_ACTION_TTL_MINUTES,
   CALLBACK_GROUP_DISABLE,
   CALLBACK_GROUP_ENABLE,
+  CALLBACK_GROUP_LEADERBOARD,
   CALLBACK_GROUP_SHOW,
   CALLBACK_GROUP_SUMMARY,
+  CALLBACK_LEADERBOARD_CUSTOM,
+  CALLBACK_LEADERBOARD_MENU,
+  CALLBACK_LEADERBOARD_SET,
+  CALLBACK_LEADERBOARD_TOGGLE,
+  CALLBACK_LEADERBOARD_WINDOW_CUSTOM,
+  CALLBACK_LEADERBOARD_WINDOW_MENU,
+  CALLBACK_LEADERBOARD_WINDOW_SET,
   CALLBACK_PANEL_LIST,
   CALLBACK_PANEL_OPEN,
   CALLBACK_PANEL_SYNC,
@@ -13,8 +21,11 @@ import {
   CALLBACK_SPOILER_DELETE,
   CALLBACK_SPOILER_MENU,
   CALLBACK_SPOILER_TOGGLE,
+  DEFAULT_LEADERBOARD_WINDOW,
+  DEFAULT_LEADERBOARD_SCHEDULE,
   DEFAULT_SCHEDULE,
   KV_SYNC_WINDOW_MS,
+  LEADERBOARD_WINDOW_PRESETS,
   SCHEDULE_CUSTOM_OPTIONS,
   SCHEDULE_PRESETS,
 } from "../constants";
@@ -26,7 +37,13 @@ import type {
   TelegramMessage,
   TelegramUpdate,
 } from "../types";
-import { decodeCallbackValue, encodeCallbackValue, isOwnerUser, truncateLabel } from "../utils";
+import {
+  decodeCallbackValue,
+  encodeCallbackValue,
+  isOwnerUser,
+  parseDuration,
+  truncateLabel,
+} from "../utils";
 import {
   clearAdminAction,
   ensureSchema,
@@ -38,11 +55,15 @@ import {
   saveGroupMessage,
   setAdminAction,
   updateGroupEnabled,
+  updateGroupLeaderboardEnabled,
+  updateGroupLeaderboardSchedule,
+  updateGroupLeaderboardWindow,
   updateGroupSchedule,
   updateGroupSpoilerAutoDelete,
   updateGroupSpoilerEnabled,
 } from "../db";
 import { parseSchedule } from "../schedule";
+import { runLeaderboardForGroup } from "../leaderboard";
 import { runSummaryForGroup } from "../summary";
 import { answerCallbackQuery, editMessage, sendMessage } from "./api";
 import { handleSpoilerMessage } from "./spoiler";
@@ -195,6 +216,21 @@ async function handleCommand(
     case "summary":
       await handleSummary(command.args, chatId, env, isOwner);
       return;
+    case "leaderboard":
+      await handleLeaderboard(command.args, chatId, env, isOwner);
+      return;
+    case "setleaderboard":
+      await handleSetLeaderboard(command.args, chatId, env, isOwner);
+      return;
+    case "setleaderboardwindow":
+      await handleSetLeaderboardWindow(command.args, chatId, env, isOwner);
+      return;
+    case "enableleaderboard":
+      await handleEnableLeaderboard(command.args, chatId, env, isOwner);
+      return;
+    case "disableleaderboard":
+      await handleDisableLeaderboard(command.args, chatId, env, isOwner);
+      return;
     case "syncgroups":
       if (!isOwner) {
         await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
@@ -232,6 +268,11 @@ function buildHelpText(isOwner: boolean): string {
   base.push("/disable <群组ID> - 禁用群组总结");
   base.push("/setschedule <群组ID> <表达式> - 设置定时");
   base.push("/summary <群组ID> - 手动触发总结");
+  base.push("/leaderboard <群组ID> - 手动发送排行榜");
+  base.push("/setleaderboard <群组ID> <表达式> - 设置排行榜周期");
+  base.push("/setleaderboardwindow <群组ID> <时长> - 设置排行榜统计窗口");
+  base.push("/enableleaderboard <群组ID> - 启用排行榜");
+  base.push("/disableleaderboard <群组ID> - 禁用排行榜");
   base.push("/syncgroups - 从注册表同步群组");
   base.push("");
   base.push("定时表达式格式:");
@@ -362,6 +403,154 @@ async function handleSetSchedule(
   await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的定时: ${schedule}`);
 }
 
+async function handleSetLeaderboard(
+  args: string[],
+  chatId: number,
+  env: Env,
+  isOwner: boolean,
+): Promise<void> {
+  if (!isOwner) {
+    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+    return;
+  }
+
+  if (args.length < 2) {
+    await sendMessage(
+      env,
+      chatId,
+      "❌ 用法: /setleaderboard <群组ID> <表达式>\n\n支持格式:\n• Cron: 0 * * * *\n• 间隔: 30m / 2h / 1d",
+    );
+    return;
+  }
+
+  const groupId = parseInt(args[0], 10);
+  if (!Number.isFinite(groupId)) {
+    await sendMessage(env, chatId, "❌ 群组ID必须是数字");
+    return;
+  }
+
+  const schedule = args.slice(1).join(" ").trim();
+  if (!parseSchedule(schedule)) {
+    await sendMessage(env, chatId, "❌ 无效的定时表达式");
+    return;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
+  }
+  await updateGroupLeaderboardSchedule(env, groupId, schedule);
+  const updated = await getGroupConfig(env, groupId);
+  if (updated) {
+    await updateRegistryFromConfig(env, updated);
+  }
+
+  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的排行榜定时: ${schedule}`);
+}
+
+async function handleSetLeaderboardWindow(
+  args: string[],
+  chatId: number,
+  env: Env,
+  isOwner: boolean,
+): Promise<void> {
+  if (!isOwner) {
+    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+    return;
+  }
+
+  if (args.length < 2) {
+    await sendMessage(
+      env,
+      chatId,
+      "❌ 用法: /setleaderboardwindow <群组ID> <时长>\n\n支持格式:\n• 30m / 2h / 1d",
+    );
+    return;
+  }
+
+  const groupId = parseInt(args[0], 10);
+  if (!Number.isFinite(groupId)) {
+    await sendMessage(env, chatId, "❌ 群组ID必须是数字");
+    return;
+  }
+
+  const windowText = args.slice(1).join(" ").trim();
+  if (!parseDuration(windowText)) {
+    await sendMessage(env, chatId, "❌ 无效的统计窗口格式");
+    return;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
+  }
+  await updateGroupLeaderboardWindow(env, groupId, windowText);
+  const updated = await getGroupConfig(env, groupId);
+  if (updated) {
+    await updateRegistryFromConfig(env, updated);
+  }
+
+  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的统计窗口: ${windowText}`);
+}
+
+async function handleEnableLeaderboard(
+  args: string[],
+  chatId: number,
+  env: Env,
+  isOwner: boolean,
+): Promise<void> {
+  if (!isOwner) {
+    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+    return;
+  }
+
+  const groupId = parseGroupIdArg(args, env, chatId);
+  if (!groupId) {
+    return;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
+  }
+  await updateGroupLeaderboardEnabled(env, groupId, true);
+  const updated = await getGroupConfig(env, groupId);
+  if (updated) {
+    await updateRegistryFromConfig(env, updated);
+  }
+  await sendMessage(env, chatId, `✅ 已启用群组 ${groupId} 的排行榜`);
+}
+
+async function handleDisableLeaderboard(
+  args: string[],
+  chatId: number,
+  env: Env,
+  isOwner: boolean,
+): Promise<void> {
+  if (!isOwner) {
+    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+    return;
+  }
+
+  const groupId = parseGroupIdArg(args, env, chatId);
+  if (!groupId) {
+    return;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendMessage(env, chatId, `❌ 群组 ${groupId} 未配置`);
+    return;
+  }
+
+  await updateGroupLeaderboardEnabled(env, groupId, false);
+  const updated = await getGroupConfig(env, groupId);
+  if (updated) {
+    await updateRegistryFromConfig(env, updated);
+  }
+  await sendMessage(env, chatId, `✅ 已禁用群组 ${groupId} 的排行榜`);
+}
+
 async function handleStatus(chatId: number, env: Env, isOwner: boolean): Promise<void> {
   if (!isOwner) {
     await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
@@ -377,13 +566,17 @@ async function handleStatus(chatId: number, env: Env, isOwner: boolean): Promise
   const lines: string[] = ["📋 群组配置状态", ""];
   for (const group of groups) {
     const statusEmoji = Number(group.enabled) === 1 ? "✅" : "⭕";
+    const leaderboardEmoji = Number(group.leaderboard_enabled) === 1 ? "✅" : "⭕";
     const name = group.group_name || String(group.group_id);
     const lastSummary = group.last_summary_time || "无";
     lines.push(
       `${statusEmoji} ${name}`,
       `ID: ${group.group_id}`,
       `定时: ${group.schedule || DEFAULT_SCHEDULE}`,
+      `排行榜: ${leaderboardEmoji} ${group.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE}`,
+      `统计窗口: ${group.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW}`,
       `上次总结: ${lastSummary}`,
+      `上次排行榜: ${group.last_leaderboard_time || "无"}`,
       "",
     );
   }
@@ -412,6 +605,35 @@ async function handleSummary(
     await sendMessage(env, chatId, `✅ 群组 ${groupId} 的总结已完成`);
   } else {
     await sendMessage(env, chatId, `❌ 总结失败: ${result.error || "未知错误"}`);
+  }
+}
+
+async function handleLeaderboard(
+  args: string[],
+  chatId: number,
+  env: Env,
+  isOwner: boolean,
+): Promise<void> {
+  if (!isOwner) {
+    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+    return;
+  }
+
+  const groupId = parseGroupIdArg(args, env, chatId);
+  if (!groupId) {
+    return;
+  }
+
+  await sendMessage(env, chatId, `⏳ 正在统计群组 ${groupId} 的排行榜...`);
+  const result = await runLeaderboardForGroup(env, groupId);
+  if (result.success) {
+    if (!result.content) {
+      await sendMessage(env, chatId, `ℹ️ 群组 ${groupId} 暂无可统计消息`);
+      return;
+    }
+    await sendMessage(env, chatId, `✅ 群组 ${groupId} 的排行榜已发送`);
+  } else {
+    await sendMessage(env, chatId, `❌ 排行榜失败: ${result.error || "未知错误"}`);
   }
 }
 
@@ -496,6 +718,10 @@ async function processCallbackData(
       await runSummaryForGroupAndNotify(env, chatId, groupId);
       return true;
     }
+    if (action === "leaderboard") {
+      await runLeaderboardForGroupAndNotify(env, chatId, groupId);
+      return true;
+    }
     return false;
   }
 
@@ -546,6 +772,56 @@ async function processCallbackData(
     return false;
   }
 
+  if (namespace === "lb") {
+    if (!Number.isFinite(groupId)) {
+      await sendMessage(env, chatId, "❌ 群组ID无效");
+      return true;
+    }
+    if (action === "menu") {
+      await sendLeaderboardMenu(env, chatId, groupId, messageId);
+      return true;
+    }
+    if (action === "toggle") {
+      await toggleLeaderboardEnabled(env, chatId, groupId, messageId);
+      return true;
+    }
+    if (action === "set") {
+      const encoded = parts[3] || "";
+      const schedule = decodeCallbackValue(encoded);
+      await applyLeaderboardSchedule(env, chatId, groupId, schedule, messageId);
+      return true;
+    }
+    if (action === "window_menu") {
+      await sendLeaderboardWindowMenu(env, chatId, groupId, messageId);
+      return true;
+    }
+    if (action === "window_set") {
+      const encoded = parts[3] || "";
+      const windowText = decodeCallbackValue(encoded);
+      await applyLeaderboardWindow(env, chatId, groupId, windowText, messageId);
+      return true;
+    }
+    if (action === "custom") {
+      await setAdminAction(env, userId, "set_leaderboard_schedule", groupId, ADMIN_ACTION_TTL_MINUTES);
+      await sendMessage(
+        env,
+        chatId,
+        "✍️ 请输入排行榜定时表达式（支持 30m / 2h / 1d 或 5 段 Cron）。\n发送“取消”可退出。",
+      );
+      return true;
+    }
+    if (action === "window_custom") {
+      await setAdminAction(env, userId, "set_leaderboard_window", groupId, ADMIN_ACTION_TTL_MINUTES);
+      await sendMessage(
+        env,
+        chatId,
+        "✍️ 请输入排行榜统计窗口（例如 30m / 2h / 1d）。\n发送“取消”可退出。",
+      );
+      return true;
+    }
+    return false;
+  }
+
   return false;
 }
 
@@ -587,6 +863,20 @@ async function handlePendingAdminAction(
   }
   if (pending.action === "set_schedule") {
     const ok = await applySchedule(env, message.chat.id, pending.group_id, content);
+    if (ok) {
+      await clearAdminAction(env, pending.user_id);
+    }
+    return true;
+  }
+  if (pending.action === "set_leaderboard_schedule") {
+    const ok = await applyLeaderboardSchedule(env, message.chat.id, pending.group_id, content);
+    if (ok) {
+      await clearAdminAction(env, pending.user_id);
+    }
+    return true;
+  }
+  if (pending.action === "set_leaderboard_window") {
+    const ok = await applyLeaderboardWindow(env, message.chat.id, pending.group_id, content);
     if (ok) {
       await clearAdminAction(env, pending.user_id);
     }
@@ -643,28 +933,39 @@ async function sendGroupActions(
   }
 
   const status = Number(config.enabled) === 1 ? "✅ 已启用" : "⭕ 未启用";
+  const leaderboardEnabled = Number(config.leaderboard_enabled) === 1;
   const spoilerEnabled = Number(config.spoiler_enabled) === 1;
   const spoilerAutoDelete = Number(config.spoiler_auto_delete) === 1;
   const name = config.group_name || String(groupId);
   const lastSummary = config.last_summary_time || "无";
+  const lastLeaderboard = config.last_leaderboard_time || "无";
   const lines = [
     `📌 ${name}`,
     `ID: ${groupId}`,
     `状态: ${status}`,
     `定时: ${config.schedule || DEFAULT_SCHEDULE}`,
+    `排行榜: ${leaderboardEnabled ? "✅ 已启用" : "⭕ 未启用"}`,
+    `排行榜周期: ${config.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE}`,
+    `统计窗口: ${config.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW}`,
     `剧透模式: ${spoilerEnabled ? "✅ 开启" : "⭕ 关闭"}`,
     `自动删除: ${spoilerAutoDelete ? "✅ 开启" : "⭕ 关闭"}`,
     `上次总结: ${lastSummary}`,
+    `上次排行榜: ${lastLeaderboard}`,
   ];
 
   const toggleLabel = Number(config.enabled) === 1 ? "禁用总结" : "启用总结";
   const toggleAction = Number(config.enabled) === 1 ? CALLBACK_GROUP_DISABLE : CALLBACK_GROUP_ENABLE;
 
+  const leaderboardToggleLabel = leaderboardEnabled ? "禁用排行榜" : "启用排行榜";
   const keyboard = [
     [{ text: toggleLabel, callback_data: `${toggleAction}:${groupId}` }],
+    [{ text: leaderboardToggleLabel, callback_data: `${CALLBACK_LEADERBOARD_TOGGLE}:${groupId}` }],
     [{ text: "剧透设置", callback_data: `${CALLBACK_SPOILER_MENU}:${groupId}` }],
     [{ text: "手动总结", callback_data: `${CALLBACK_GROUP_SUMMARY}:${groupId}` }],
+    [{ text: "手动排行榜", callback_data: `${CALLBACK_GROUP_LEADERBOARD}:${groupId}` }],
     [{ text: "设置定时", callback_data: `${CALLBACK_SCHEDULE_MENU}:${groupId}` }],
+    [{ text: "排行榜周期", callback_data: `${CALLBACK_LEADERBOARD_MENU}:${groupId}` }],
+    [{ text: "统计窗口", callback_data: `${CALLBACK_LEADERBOARD_WINDOW_MENU}:${groupId}` }],
     [{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }],
   ];
 
@@ -711,6 +1012,95 @@ async function sendScheduleMenu(
   keyboard.push([
     { text: "自定义表达式", callback_data: `${CALLBACK_SCHEDULE_CUSTOM}:${groupId}` },
   ]);
+  keyboard.push([
+    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
+  ]);
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendLeaderboardMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+
+  const lines = [
+    "🏆 选择排行榜周期",
+    `当前: ${config.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE}`,
+    "",
+    "预设选项:",
+    ...SCHEDULE_PRESETS.map((preset) => `• ${preset.label}（${preset.description}）`),
+  ];
+
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (const preset of SCHEDULE_PRESETS) {
+    keyboard.push([
+      {
+        text: preset.label,
+        callback_data: `${CALLBACK_LEADERBOARD_SET}:${groupId}:${encodeCallbackValue(preset.value)}`,
+      },
+    ]);
+  }
+  keyboard.push(...SCHEDULE_CUSTOM_OPTIONS.map((preset) => ([
+    {
+      text: preset.label,
+      callback_data: `${CALLBACK_LEADERBOARD_SET}:${groupId}:${encodeCallbackValue(preset.value)}`,
+    },
+  ])));
+  keyboard.push([
+    { text: "自定义表达式", callback_data: `${CALLBACK_LEADERBOARD_CUSTOM}:${groupId}` },
+  ]);
+  keyboard.push([
+    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
+  ]);
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendLeaderboardWindowMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+
+  const lines = [
+    "⏱️ 选择统计窗口",
+    `当前: ${config.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW}`,
+    "",
+    "预设选项:",
+    ...LEADERBOARD_WINDOW_PRESETS.map((preset) => `• ${preset.label}（${preset.description}）`),
+  ];
+
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (const preset of LEADERBOARD_WINDOW_PRESETS) {
+    keyboard.push([
+      {
+        text: preset.label,
+        callback_data: `${CALLBACK_LEADERBOARD_WINDOW_SET}:${groupId}:${encodeCallbackValue(preset.value)}`,
+      },
+    ]);
+  }
+  keyboard.push([{
+    text: "自定义时长",
+    callback_data: `${CALLBACK_LEADERBOARD_WINDOW_CUSTOM}:${groupId}`,
+  }]);
   keyboard.push([
     { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
   ]);
@@ -796,6 +1186,23 @@ async function toggleSpoilerAutoDelete(
   await sendSpoilerMenu(env, chatId, groupId, messageId);
 }
 
+async function toggleLeaderboardEnabled(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+  const next = Number(config.leaderboard_enabled) !== 1;
+  await updateGroupLeaderboardEnabled(env, groupId, next);
+  await updateRegistryFromConfig(env, { ...config, leaderboard_enabled: next ? 1 : 0 });
+  await sendGroupActions(env, chatId, groupId, messageId);
+}
+
 async function setGroupEnabled(
   env: Env,
   chatId: number,
@@ -860,6 +1267,78 @@ async function applySchedule(
   return true;
 }
 
+async function applyLeaderboardSchedule(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  schedule: string,
+  messageId: number | null = null,
+): Promise<boolean> {
+  const trimmed = schedule.trim();
+  if (!parseSchedule(trimmed)) {
+    await sendPanelMessage(
+      env,
+      chatId,
+      "❌ 无效的排行榜定时表达式，请重新输入或发送“取消”。",
+      messageId,
+    );
+    return false;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
+  }
+  await updateGroupLeaderboardSchedule(env, groupId, trimmed);
+
+  const updatedConfig = await getGroupConfig(env, groupId);
+  if (updatedConfig) {
+    await updateRegistryFromConfig(env, updatedConfig);
+  }
+  if (messageId) {
+    await sendLeaderboardMenu(env, chatId, groupId, messageId);
+    return true;
+  }
+  await sendPanelMessage(env, chatId, `✅ 已设置群组 ${groupId} 的排行榜定时: ${trimmed}`, null);
+  return true;
+}
+
+async function applyLeaderboardWindow(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  windowText: string,
+  messageId: number | null = null,
+): Promise<boolean> {
+  const trimmed = windowText.trim();
+  if (!parseDuration(trimmed)) {
+    await sendPanelMessage(
+      env,
+      chatId,
+      "❌ 无效的统计窗口，请使用 30m / 2h / 1d 这类格式。",
+      messageId,
+    );
+    return false;
+  }
+
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
+  }
+  await updateGroupLeaderboardWindow(env, groupId, trimmed);
+
+  const updatedConfig = await getGroupConfig(env, groupId);
+  if (updatedConfig) {
+    await updateRegistryFromConfig(env, updatedConfig);
+  }
+  if (messageId) {
+    await sendLeaderboardWindowMenu(env, chatId, groupId, messageId);
+    return true;
+  }
+  await sendPanelMessage(env, chatId, `✅ 已设置群组 ${groupId} 的统计窗口: ${trimmed}`, null);
+  return true;
+}
+
 async function sendPanelMessage(
   env: Env,
   chatId: number,
@@ -893,6 +1372,24 @@ async function runSummaryForGroupAndNotify(
     await sendMessage(env, chatId, `✅ 群组 ${groupId} 的总结已完成`);
   } else {
     await sendMessage(env, chatId, `❌ 总结失败: ${result.error || "未知错误"}`);
+  }
+}
+
+async function runLeaderboardForGroupAndNotify(
+  env: Env,
+  chatId: number,
+  groupId: number,
+): Promise<void> {
+  await sendMessage(env, chatId, `⏳ 正在统计群组 ${groupId} 的排行榜...`);
+  const result = await runLeaderboardForGroup(env, groupId);
+  if (result.success) {
+    if (!result.content) {
+      await sendMessage(env, chatId, `ℹ️ 群组 ${groupId} 暂无可统计消息`);
+      return;
+    }
+    await sendMessage(env, chatId, `✅ 群组 ${groupId} 的排行榜已发送`);
+  } else {
+    await sendMessage(env, chatId, `❌ 排行榜失败: ${result.error || "未知错误"}`);
   }
 }
 

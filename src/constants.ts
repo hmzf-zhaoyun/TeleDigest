@@ -1,6 +1,9 @@
 export const TELEGRAM_API_BASE = "https://api.telegram.org";
 export const DEFAULT_SCHEDULE = "0 * * * *";
+export const DEFAULT_LEADERBOARD_SCHEDULE = "1h";
+export const DEFAULT_LEADERBOARD_WINDOW = "1h";
 export const MAX_MESSAGES_PER_SUMMARY = 500;
+export const LEADERBOARD_TOP_N = 10;
 export const LLM_TIMEOUT_MS = 120000;
 export const TELEGRAM_TEXT_LIMIT = 4096;
 export const TELEGRAM_SAFE_LIMIT = 3500;
@@ -16,9 +19,17 @@ export const CALLBACK_GROUP_SHOW = "grp:show";
 export const CALLBACK_GROUP_ENABLE = "grp:enable";
 export const CALLBACK_GROUP_DISABLE = "grp:disable";
 export const CALLBACK_GROUP_SUMMARY = "grp:summary";
+export const CALLBACK_GROUP_LEADERBOARD = "grp:leaderboard";
 export const CALLBACK_SCHEDULE_MENU = "sch:menu";
 export const CALLBACK_SCHEDULE_SET = "sch:set";
 export const CALLBACK_SCHEDULE_CUSTOM = "sch:custom";
+export const CALLBACK_LEADERBOARD_MENU = "lb:menu";
+export const CALLBACK_LEADERBOARD_SET = "lb:set";
+export const CALLBACK_LEADERBOARD_CUSTOM = "lb:custom";
+export const CALLBACK_LEADERBOARD_TOGGLE = "lb:toggle";
+export const CALLBACK_LEADERBOARD_WINDOW_MENU = "lb:window_menu";
+export const CALLBACK_LEADERBOARD_WINDOW_SET = "lb:window_set";
+export const CALLBACK_LEADERBOARD_WINDOW_CUSTOM = "lb:window_custom";
 export const CALLBACK_SPOILER_MENU = "spo:menu";
 export const CALLBACK_SPOILER_TOGGLE = "spo:toggle";
 export const CALLBACK_SPOILER_DELETE = "spo:delete";
@@ -39,4 +50,14 @@ export const SCHEDULE_CUSTOM_OPTIONS: Array<{ label: string; value: string }> = 
   { label: "3小时", value: "3h" },
   { label: "6小时", value: "6h" },
   { label: "8小时", value: "8h" },
+];
+
+export const LEADERBOARD_WINDOW_PRESETS: Array<{ label: string; value: string; description: string }> = [
+  { label: "1小时", value: "1h", description: "统计过去1小时" },
+  { label: "2小时", value: "2h", description: "统计过去2小时" },
+  { label: "4小时", value: "4h", description: "统计过去4小时" },
+  { label: "8小时", value: "8h", description: "统计过去8小时" },
+  { label: "12小时", value: "12h", description: "统计过去12小时" },
+  { label: "1天", value: "1d", description: "统计过去1天" },
+  { label: "3天", value: "3d", description: "统计过去3天" },
 ];

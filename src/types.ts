@@ -103,9 +103,13 @@ export type GroupConfigRow = {
   group_name: string;
   enabled: number;
   schedule: string;
+  leaderboard_schedule: string | null;
+  leaderboard_enabled: number;
+  leaderboard_window: string | null;
   target_chat_id: number | null;
   last_summary_time: string | null;
   last_message_id: number;
+  last_leaderboard_time: string | null;
   spoiler_enabled?: number;
   spoiler_auto_delete?: number;
 };
@@ -115,6 +119,7 @@ export type GroupMessageRow = {
   group_id: number;
   sender_id: number;
   sender_name: string;
+  sender_is_bot?: number;
   content: string;
   message_date: string;
   has_media: number;
