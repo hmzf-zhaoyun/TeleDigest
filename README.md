@@ -99,6 +99,31 @@ GROUPS_KV 用于保存机器人已加入的群组注册表，便于数据库丢�
      -d "secret_token=<你的TG_WEBHOOK_SECRET>"
    ```
 
+### 切换 Bot（只输入 Token）
+
+如果只需要替换 Bot Token，可用快捷脚本（不会重新部署代码）：
+
+1. 一次性在 `.env.worker` 配置 Webhook 地址（以下二选一）：
+   ```env
+   WEBHOOK_URL=https://<name>.<subdomain>.workers.dev/telegram
+   # 或
+   WORKERS_DEV_SUBDOMAIN=your-subdomain
+   # 可选：TG_WEBHOOK_SECRET=your_secret
+   ```
+2. 运行脚本并输入新的 Token
+   ```bash
+   npm run bot:switch
+   ```
+   仅需输入 `TG_BOT_TOKEN`。
+
+可选参数：
+```bash
+npm run bot:switch -- --token <TOKEN>              # 直接传 token（不推荐，可能写入 shell 历史）
+npm run bot:switch -- --webhook-url <URL>          # 临时指定 URL
+npm run bot:switch -- --skip-webhook               # 仅更新 token，不设置 webhook
+npm run bot:switch -- --owner-id <ID>              # 同步更新 TG_BOT_OWNER_ID
+```
+
 ### 重要说明
 
 - 定时调度由 Cron 触发器每分钟执行一次，实际任务频率由群组 schedule 决定

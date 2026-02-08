@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "deploy:oneclick": "node scripts/oneclick-deploy.mjs",
+    "bot:switch": "node scripts/switch-bot.mjs",
     "db:init": "wrangler d1 execute DB --file schema.sql",
     "db:reset": "wrangler d1 execute DB --file schema.sql --reset"
   },
