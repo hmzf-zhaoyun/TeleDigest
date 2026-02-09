@@ -3,6 +3,25 @@ import { escapeHtml } from "../utils";
 import { getGroupConfig } from "../db";
 import { sendMessage, telegramApi } from "./api";
 
+const MEDIA_GROUP_DEBOUNCE_MS = 700;
+
+type PendingMediaItem = {
+  type: "photo" | "video";
+  media: string;
+  messageId: number;
+};
+
+type PendingMediaGroup = {
+  chatId: number;
+  items: PendingMediaItem[];
+  caption?: string;
+  lastUpdated: number;
+  flushing: boolean;
+  autoDelete: boolean;
+};
+
+const pendingMediaGroups = new Map<string, PendingMediaGroup>();
+
 export async function handleSpoilerMessage(message: TelegramMessage, env: Env): Promise<void> {
   const chat = message.chat;
   if (chat.type !== "group" && chat.type !== "supergroup") {
@@ -46,6 +65,18 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env): 
   }
 
   try {
+    if (message.media_group_id) {
+      const queued = await queueMediaGroupSpoiler(
+        message,
+        finalText,
+        env,
+        Number(config.spoiler_auto_delete) === 1,
+      );
+      if (queued) {
+        return;
+      }
+    }
+
     let sent = false;
     if (message.photo && message.photo.length > 0) {
       const fileId = extractPhotoFileId(message.photo);
@@ -119,6 +150,180 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env): 
   } catch (error) {
     console.error("spoiler handling failed", error);
   }
+}
+
+async function queueMediaGroupSpoiler(
+  message: TelegramMessage,
+  captionHtml: string,
+  env: Env,
+  autoDelete: boolean,
+): Promise<boolean> {
+  const groupId = message.media_group_id;
+  if (!groupId) {
+    return false;
+  }
+  const item = extractMediaGroupItem(message);
+  if (!item) {
+    return false;
+  }
+
+  const key = `${message.chat.id}:${groupId}`;
+  const now = Date.now();
+  const entry: PendingMediaGroup = pendingMediaGroups.get(key) || {
+    chatId: message.chat.id,
+    items: [],
+    caption: undefined,
+    lastUpdated: now,
+    flushing: false,
+    autoDelete,
+  };
+
+  if (autoDelete && !entry.autoDelete) {
+    entry.autoDelete = true;
+  }
+  if (!entry.items.some((existing) => existing.messageId === item.messageId)) {
+    entry.items.push(item);
+  }
+  if (captionHtml && !entry.caption) {
+    entry.caption = captionHtml;
+  }
+  entry.lastUpdated = now;
+  pendingMediaGroups.set(key, entry);
+
+  await flushMediaGroupWhenIdle(key, now, env);
+  return true;
+}
+
+async function flushMediaGroupWhenIdle(
+  key: string,
+  observedUpdatedAt: number,
+  env: Env,
+): Promise<void> {
+  await sleep(MEDIA_GROUP_DEBOUNCE_MS);
+  const entry = pendingMediaGroups.get(key);
+  if (!entry) {
+    return;
+  }
+  if (entry.lastUpdated !== observedUpdatedAt) {
+    return;
+  }
+  if (entry.flushing) {
+    return;
+  }
+  entry.flushing = true;
+  pendingMediaGroups.set(key, entry);
+
+  try {
+    await sendMediaGroupSpoiler(env, entry);
+  } catch (error) {
+    console.error("spoiler media group failed", error);
+  } finally {
+    pendingMediaGroups.delete(key);
+  }
+}
+
+async function sendMediaGroupSpoiler(env: Env, group: PendingMediaGroup): Promise<void> {
+  if (!group.items.length) {
+    return;
+  }
+
+  let sent = false;
+  if (group.items.length === 1) {
+    await sendSingleSpoilerItem(env, group.chatId, group.items[0], group.caption);
+    sent = true;
+  } else {
+    const media = group.items.map((item, index) => {
+      const payload: Record<string, unknown> = {
+        type: item.type,
+        media: item.media,
+        has_spoiler: true,
+      };
+      if (index === 0 && group.caption) {
+        payload.caption = group.caption;
+        payload.parse_mode = "HTML";
+      }
+      return payload;
+    });
+
+    try {
+      await telegramApi(env, "sendMediaGroup", {
+        chat_id: group.chatId,
+        media,
+      });
+      sent = true;
+    } catch (error) {
+      console.error("sendMediaGroup failed, fallback to single sends", error);
+      for (let i = 0; i < group.items.length; i += 1) {
+        const caption = i === 0 ? group.caption : undefined;
+        await sendSingleSpoilerItem(env, group.chatId, group.items[i], caption);
+      }
+      sent = true;
+    }
+  }
+
+  if (sent && group.autoDelete) {
+    await deleteOriginalMessages(env, group.chatId, group.items.map((item) => item.messageId));
+  }
+}
+
+async function sendSingleSpoilerItem(
+  env: Env,
+  chatId: number,
+  item: PendingMediaItem,
+  caption?: string,
+): Promise<void> {
+  const basePayload = {
+    chat_id: chatId,
+    caption: caption || undefined,
+    parse_mode: caption ? "HTML" : undefined,
+    has_spoiler: true,
+  };
+  if (item.type === "photo") {
+    await telegramApi(env, "sendPhoto", {
+      ...basePayload,
+      photo: item.media,
+    });
+    return;
+  }
+  await telegramApi(env, "sendVideo", {
+    ...basePayload,
+    video: item.media,
+  });
+}
+
+async function deleteOriginalMessages(
+  env: Env,
+  chatId: number,
+  messageIds: number[],
+): Promise<void> {
+  for (const messageId of messageIds) {
+    await telegramApi(env, "deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+}
+
+function extractMediaGroupItem(message: TelegramMessage): PendingMediaItem | null {
+  if (message.photo && message.photo.length > 0) {
+    const fileId = extractPhotoFileId(message.photo);
+    if (fileId) {
+      return { type: "photo", media: fileId, messageId: message.message_id };
+    }
+  }
+  if (message.video) {
+    const fileId = extractMediaFileId(message.video);
+    if (fileId) {
+      return { type: "video", media: fileId, messageId: message.message_id };
+    }
+  }
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function shouldTriggerSpoiler(message: TelegramMessage): boolean {

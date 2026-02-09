@@ -3,8 +3,10 @@ import {
   CALLBACK_GROUP_DISABLE,
   CALLBACK_GROUP_ENABLE,
   CALLBACK_GROUP_LEADERBOARD,
+  CALLBACK_GROUP_LEADERBOARD_MENU,
   CALLBACK_GROUP_SHOW,
   CALLBACK_GROUP_SUMMARY,
+  CALLBACK_GROUP_SUMMARY_MENU,
   CALLBACK_LEADERBOARD_CUSTOM,
   CALLBACK_LEADERBOARD_MENU,
   CALLBACK_LEADERBOARD_SET,
@@ -700,18 +702,35 @@ async function processCallbackData(
       await sendMessage(env, chatId, "❌ 群组ID无效");
       return true;
     }
+    const context = parts[3] || "";
     if (action === "show") {
       await sendGroupActions(env, chatId, groupId, messageId);
       return true;
     }
+    if (action === "summary_menu") {
+      await sendSummarySettingsMenu(env, chatId, groupId, messageId);
+      return true;
+    }
+    if (action === "leaderboard_menu") {
+      await sendLeaderboardSettingsMenu(env, chatId, groupId, messageId);
+      return true;
+    }
     if (action === "enable") {
       await setGroupEnabled(env, chatId, groupId, true, messageId);
-      await sendGroupActions(env, chatId, groupId, messageId);
+      if (context === "summary") {
+        await sendSummarySettingsMenu(env, chatId, groupId, messageId);
+      } else {
+        await sendGroupActions(env, chatId, groupId, messageId);
+      }
       return true;
     }
     if (action === "disable") {
       await setGroupEnabled(env, chatId, groupId, false, messageId);
-      await sendGroupActions(env, chatId, groupId, messageId);
+      if (context === "summary") {
+        await sendSummarySettingsMenu(env, chatId, groupId, messageId);
+      } else {
+        await sendGroupActions(env, chatId, groupId, messageId);
+      }
       return true;
     }
     if (action === "summary") {
@@ -782,7 +801,9 @@ async function processCallbackData(
       return true;
     }
     if (action === "toggle") {
-      await toggleLeaderboardEnabled(env, chatId, groupId, messageId);
+      const context = parts[3] || "";
+      const returnTo = context === "settings" ? "leaderboard" : "group";
+      await toggleLeaderboardEnabled(env, chatId, groupId, messageId, returnTo);
       return true;
     }
     if (action === "set") {
@@ -953,20 +974,88 @@ async function sendGroupActions(
     `上次排行榜: ${lastLeaderboard}`,
   ];
 
-  const toggleLabel = Number(config.enabled) === 1 ? "禁用总结" : "启用总结";
-  const toggleAction = Number(config.enabled) === 1 ? CALLBACK_GROUP_DISABLE : CALLBACK_GROUP_ENABLE;
-
-  const leaderboardToggleLabel = leaderboardEnabled ? "禁用排行榜" : "启用排行榜";
   const keyboard = [
-    [{ text: toggleLabel, callback_data: `${toggleAction}:${groupId}` }],
-    [{ text: leaderboardToggleLabel, callback_data: `${CALLBACK_LEADERBOARD_TOGGLE}:${groupId}` }],
+    [{ text: "总结设置", callback_data: `${CALLBACK_GROUP_SUMMARY_MENU}:${groupId}` }],
+    [{ text: "排行榜设置", callback_data: `${CALLBACK_GROUP_LEADERBOARD_MENU}:${groupId}` }],
     [{ text: "剧透设置", callback_data: `${CALLBACK_SPOILER_MENU}:${groupId}` }],
-    [{ text: "手动总结", callback_data: `${CALLBACK_GROUP_SUMMARY}:${groupId}` }],
-    [{ text: "手动排行榜", callback_data: `${CALLBACK_GROUP_LEADERBOARD}:${groupId}` }],
-    [{ text: "设置定时", callback_data: `${CALLBACK_SCHEDULE_MENU}:${groupId}` }],
-    [{ text: "排行榜周期", callback_data: `${CALLBACK_LEADERBOARD_MENU}:${groupId}` }],
-    [{ text: "统计窗口", callback_data: `${CALLBACK_LEADERBOARD_WINDOW_MENU}:${groupId}` }],
     [{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }],
+  ];
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendSummarySettingsMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+
+  const enabled = Number(config.enabled) === 1;
+  const name = config.group_name || String(groupId);
+  const lastSummary = config.last_summary_time || "无";
+  const lines = [
+    "📝 总结设置",
+    `群组: ${name}`,
+    `ID: ${groupId}`,
+    `状态: ${enabled ? "✅ 已启用" : "⭕ 未启用"}`,
+    `定时: ${config.schedule || DEFAULT_SCHEDULE}`,
+    `上次总结: ${lastSummary}`,
+  ];
+
+  const toggleLabel = enabled ? "禁用总结" : "启用总结";
+  const toggleAction = enabled ? CALLBACK_GROUP_DISABLE : CALLBACK_GROUP_ENABLE;
+  const keyboard = [
+    [{ text: toggleLabel, callback_data: `${toggleAction}:${groupId}:summary` }],
+    [{ text: "设置定时", callback_data: `${CALLBACK_SCHEDULE_MENU}:${groupId}` }],
+    [{ text: "手动总结", callback_data: `${CALLBACK_GROUP_SUMMARY}:${groupId}` }],
+    [{ text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` }],
+  ];
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendLeaderboardSettingsMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+
+  const enabled = Number(config.leaderboard_enabled) === 1;
+  const name = config.group_name || String(groupId);
+  const lastLeaderboard = config.last_leaderboard_time || "无";
+  const lines = [
+    "🏆 排行榜设置",
+    `群组: ${name}`,
+    `ID: ${groupId}`,
+    `状态: ${enabled ? "✅ 已启用" : "⭕ 未启用"}`,
+    `排行榜周期: ${config.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE}`,
+    `统计窗口: ${config.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW}`,
+    `上次排行榜: ${lastLeaderboard}`,
+  ];
+
+  const toggleLabel = enabled ? "禁用排行榜" : "启用排行榜";
+  const keyboard = [
+    [{ text: toggleLabel, callback_data: `${CALLBACK_LEADERBOARD_TOGGLE}:${groupId}:settings` }],
+    [{ text: "设置排行榜周期", callback_data: `${CALLBACK_LEADERBOARD_MENU}:${groupId}` }],
+    [{ text: "设置统计窗口", callback_data: `${CALLBACK_LEADERBOARD_WINDOW_MENU}:${groupId}` }],
+    [{ text: "手动排行榜", callback_data: `${CALLBACK_GROUP_LEADERBOARD}:${groupId}` }],
+    [{ text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` }],
   ];
 
   await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
@@ -1013,7 +1102,7 @@ async function sendScheduleMenu(
     { text: "自定义表达式", callback_data: `${CALLBACK_SCHEDULE_CUSTOM}:${groupId}` },
   ]);
   keyboard.push([
-    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
+    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SUMMARY_MENU}:${groupId}` },
   ]);
 
   await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
@@ -1060,7 +1149,7 @@ async function sendLeaderboardMenu(
     { text: "自定义表达式", callback_data: `${CALLBACK_LEADERBOARD_CUSTOM}:${groupId}` },
   ]);
   keyboard.push([
-    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
+    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_LEADERBOARD_MENU}:${groupId}` },
   ]);
 
   await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
@@ -1102,7 +1191,7 @@ async function sendLeaderboardWindowMenu(
     callback_data: `${CALLBACK_LEADERBOARD_WINDOW_CUSTOM}:${groupId}`,
   }]);
   keyboard.push([
-    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` },
+    { text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_LEADERBOARD_MENU}:${groupId}` },
   ]);
 
   await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
@@ -1191,6 +1280,7 @@ async function toggleLeaderboardEnabled(
   chatId: number,
   groupId: number,
   messageId: number | null = null,
+  returnTo: "group" | "leaderboard" = "group",
 ): Promise<void> {
   const config = await getGroupConfig(env, groupId);
   if (!config) {
@@ -1200,6 +1290,10 @@ async function toggleLeaderboardEnabled(
   const next = Number(config.leaderboard_enabled) !== 1;
   await updateGroupLeaderboardEnabled(env, groupId, next);
   await updateRegistryFromConfig(env, { ...config, leaderboard_enabled: next ? 1 : 0 });
+  if (returnTo === "leaderboard") {
+    await sendLeaderboardSettingsMenu(env, chatId, groupId, messageId);
+    return;
+  }
   await sendGroupActions(env, chatId, groupId, messageId);
 }
 

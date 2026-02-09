@@ -19,23 +19,30 @@ export async function sendSummary(
 
   if (html.length <= TELEGRAM_TEXT_LIMIT) {
     try {
-      await sendMessage(env, chatId, html, { parse_mode: "HTML" });
+      await sendMessage(env, chatId, html, {
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      });
       return;
     } catch {
       // fallback below
     }
   }
-  await sendPlainTextChunked(env, chatId, plain);
+  await sendPlainTextChunked(env, chatId, plain, true);
 }
 
 export async function sendMessage(
   env: Env,
   chatId: number,
   text: string,
-  options: { parse_mode?: "HTML" | "Markdown"; reply_markup?: InlineKeyboardMarkup } = {},
+  options: {
+    parse_mode?: "HTML" | "Markdown";
+    reply_markup?: InlineKeyboardMarkup;
+    disable_web_page_preview?: boolean;
+  } = {},
 ): Promise<void> {
   if (!options.parse_mode && !options.reply_markup && text.length > TELEGRAM_TEXT_LIMIT) {
-    await sendPlainTextChunked(env, chatId, text);
+    await sendPlainTextChunked(env, chatId, text, options.disable_web_page_preview);
     return;
   }
   await telegramApi(env, "sendMessage", {
@@ -94,12 +101,18 @@ export async function telegramApi(env: Env, method: string, payload: unknown): P
   }
 }
 
-async function sendPlainTextChunked(env: Env, chatId: number, text: string): Promise<void> {
+async function sendPlainTextChunked(
+  env: Env,
+  chatId: number,
+  text: string,
+  disableWebPreview?: boolean,
+): Promise<void> {
   const parts = splitTextForTelegram(text, TELEGRAM_SAFE_LIMIT);
   for (const part of parts) {
     await telegramApi(env, "sendMessage", {
       chat_id: chatId,
       text: part,
+      disable_web_page_preview: disableWebPreview ? true : undefined,
     });
   }
 }

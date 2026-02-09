@@ -45,6 +45,7 @@ export type TelegramMessage = {
   forward_from_chat?: TelegramChat;
   forward_from_message_id?: number;
   forward_sender_name?: string;
+  media_group_id?: string;
   photo?: unknown[];
   video?: unknown;
   document?: unknown;
