@@ -2,6 +2,7 @@ import {
   DEFAULT_LEADERBOARD_SCHEDULE,
   DEFAULT_LEADERBOARD_WINDOW,
   LEADERBOARD_TOP_N,
+  LLM_TIMEOUT_MS,
 } from "./constants";
 import type { Env } from "./types";
 import {
@@ -20,6 +21,18 @@ type LeaderboardResult = {
   error?: string;
 };
 
+const GROUP_TIMEOUT_MS = LLM_TIMEOUT_MS + 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 export async function runScheduledLeaderboards(env: Env): Promise<void> {
   if (!env.DB || !env.TG_BOT_TOKEN) {
     return;
@@ -33,24 +46,29 @@ export async function runScheduledLeaderboards(env: Env): Promise<void> {
   const now = new Date();
   const tzOffset = getScheduleTzOffsetMinutes(env);
 
+  const tasks: Promise<void>[] = [];
+
   for (const group of groups) {
-    try {
-      const scheduleText = (group.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE).trim();
-      const parsed = parseSchedule(scheduleText);
-      if (!parsed) {
-        continue;
-      }
-      if (!isScheduleDue(parsed, group.last_leaderboard_time, now, tzOffset)) {
-        continue;
-      }
-      await runLeaderboardForGroup(env, group.group_id, now);
-    } catch (error) {
-      console.error("scheduled leaderboard failed", {
-        groupId: group.group_id,
-        error,
-      });
+    const scheduleText = (group.leaderboard_schedule || DEFAULT_LEADERBOARD_SCHEDULE).trim();
+    const parsed = parseSchedule(scheduleText);
+    if (!parsed) {
+      continue;
     }
+    if (!isScheduleDue(parsed, group.last_leaderboard_time, now, tzOffset)) {
+      continue;
+    }
+    tasks.push(
+      withTimeout(
+        runLeaderboardForGroup(env, group.group_id, now).then(() => { }),
+        GROUP_TIMEOUT_MS,
+        `leaderboard:${group.group_id}`,
+      ).catch((error) => {
+        console.error("scheduled leaderboard failed", { groupId: group.group_id, error });
+      }),
+    );
   }
+
+  await Promise.allSettled(tasks);
 }
 
 export async function runLeaderboardForGroup(

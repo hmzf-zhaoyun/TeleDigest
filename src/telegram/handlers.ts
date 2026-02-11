@@ -84,7 +84,7 @@ import { registerGroup, removeGroup, syncGroupsFromRegistry, updateRegistryFromC
 export async function handleTelegramWebhook(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
+  _ctx: ExecutionContext,
 ): Promise<Response> {
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
@@ -111,11 +111,11 @@ export async function handleTelegramWebhook(
     return new Response("Bad Request", { status: 400 });
   }
 
-  ctx.waitUntil(
-    processUpdate(update, env).catch((error) => {
-      console.error("processUpdate failed", error);
-    }),
-  );
+  try {
+    await processUpdate(update, env);
+  } catch (error) {
+    console.error("processUpdate failed", error);
+  }
   return new Response("ok");
 }
 

@@ -32,18 +32,30 @@ export function extractLinuxdoUrl(text: string): string | null {
   return `https://linux.do/t/topic/${topicId}/${postNumber}.json`;
 }
 
+/**
+ * Normalize cookie value: if it already looks like a full cookie string
+ * (contains "="), use as-is; otherwise treat as a bare _t token value.
+ */
+function buildCookieString(raw: string): string {
+  return raw.includes("=") ? raw : `_t=${raw}`;
+}
+
 export async function fetchLinuxdoPost(jsonUrl: string, env: Env, userToken?: string | null): Promise<LinuxdoPost | null> {
-  const cookie = userToken || env.LINUXDO_COOKIE || null;
+  const rawCookie = userToken || env.LINUXDO_COOKIE || null;
+  const cookie = rawCookie ? buildCookieString(rawCookie) : null;
+  console.log(`[linuxdo] url=${jsonUrl} cookieSource=${userToken ? "user" : env.LINUXDO_COOKIE ? "env" : "none"} cookieLen=${cookie?.length ?? 0} hasScrape=${!!env.SCRAPE_DO_TOKEN}`);
 
   // 策略1: scrape.do 代理 + cookie（绕过 Cloudflare 且带认证）
   if (env.SCRAPE_DO_TOKEN) {
     const result = await fetchViaScrapeProxy(jsonUrl, env.SCRAPE_DO_TOKEN, cookie);
+    console.log(`[linuxdo] scrape.do result=${!!result}`);
     if (result) return result;
   }
 
   // 策略2: cookie 直连（无代理时降级）
   if (cookie) {
     const result = await fetchDirect(jsonUrl, cookie);
+    console.log(`[linuxdo] direct result=${!!result}`);
     if (result) return result;
   }
 
@@ -52,20 +64,24 @@ export async function fetchLinuxdoPost(jsonUrl: string, env: Env, userToken?: st
 
 async function fetchViaScrapeProxy(jsonUrl: string, token: string, cookie?: string | null): Promise<LinuxdoPost | null> {
   try {
-    const proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}`;
-    const headers: Record<string, string> = {};
+    let proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}`;
     if (cookie) {
-      headers["Cookie"] = `_t=${cookie}`;
+      proxyUrl += `&setCookies=${encodeURIComponent(cookie)}`;
     }
-    const response = await fetch(proxyUrl, { headers });
+    console.log(`[linuxdo] scrape.do requesting...`);
+    const response = await fetch(proxyUrl);
+    console.log(`[linuxdo] scrape.do status=${response.status}`);
     if (!response.ok) {
-      console.error(`scrape.do failed: ${response.status}`);
+      const body = await response.text();
+      console.error(`[linuxdo] scrape.do body=${body.slice(0, 500)}`);
       return null;
     }
-    const data = await response.json() as LinuxdoApiResponse;
+    const text = await response.text();
+    console.log(`[linuxdo] scrape.do responseLen=${text.length} preview=${text.slice(0, 200)}`);
+    const data = JSON.parse(text) as LinuxdoApiResponse;
     return parseLinuxdoResponse(data);
   } catch (error) {
-    console.error("scrape.do error:", error);
+    console.error("[linuxdo] scrape.do error:", error);
     return null;
   }
 }
@@ -76,13 +92,19 @@ async function fetchDirect(jsonUrl: string, cookie: string): Promise<LinuxdoPost
       headers: {
         Accept: "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Cookie: `_t=${cookie}`,
+        Cookie: cookie,
       },
     });
-    if (!response.ok) return null;
+    console.log(`[linuxdo] direct status=${response.status}`);
+    if (!response.ok) {
+      const body = await response.text();
+      console.error(`[linuxdo] direct body=${body.slice(0, 300)}`);
+      return null;
+    }
     const data = await response.json() as LinuxdoApiResponse;
     return parseLinuxdoResponse(data);
-  } catch {
+  } catch (error) {
+    console.error("[linuxdo] direct error:", error);
     return null;
   }
 }

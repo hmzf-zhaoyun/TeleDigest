@@ -16,10 +16,10 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
     if (env.DB) {
       await ensureSchema(env);
     }
-    ctx.waitUntil(Promise.all([runScheduledSummaries(env), runScheduledLeaderboards(env)]));
+    await Promise.allSettled([runScheduledSummaries(env), runScheduledLeaderboards(env)]);
   },
 };
