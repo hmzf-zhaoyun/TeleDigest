@@ -46,6 +46,13 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS user_linuxdo_tokens (
+  user_id INTEGER PRIMARY KEY,
+  token TEXT NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_messages_group_summarized
 ON group_messages(group_id, is_summarized);
 

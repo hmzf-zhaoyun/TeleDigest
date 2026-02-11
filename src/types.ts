@@ -11,6 +11,8 @@ export interface Env {
   LLM_MAX_TOKENS?: string;
   LLM_TEMPERATURE?: string;
   SCHEDULE_TZ_OFFSET_MINUTES?: string;
+  LINUXDO_COOKIE?: string;
+  SCRAPE_DO_TOKEN?: string;
 }
 
 export type TelegramUpdate = {
@@ -113,6 +115,7 @@ export type GroupConfigRow = {
   last_leaderboard_time: string | null;
   spoiler_enabled?: number;
   spoiler_auto_delete?: number;
+  linuxdo_enabled?: number;
 };
 
 export type GroupMessageRow = {

@@ -35,6 +35,11 @@ export const CALLBACK_LEADERBOARD_WINDOW_CUSTOM = "lb:window_custom";
 export const CALLBACK_SPOILER_MENU = "spo:menu";
 export const CALLBACK_SPOILER_TOGGLE = "spo:toggle";
 export const CALLBACK_SPOILER_DELETE = "spo:delete";
+export const CALLBACK_LINUXDO_MENU = "ldo:menu";
+export const CALLBACK_LINUXDO_TOGGLE = "ldo:toggle";
+export const CALLBACK_LINUXDO_TOKEN_MENU = "ldt:menu";
+export const CALLBACK_LINUXDO_TOKEN_SET = "ldt:set";
+export const CALLBACK_LINUXDO_TOKEN_DELETE = "ldt:delete";
 
 export const SCHEDULE_PRESETS: Array<{ label: string; value: string; description: string }> = [
   { label: "每小时", value: "1h", description: "每隔1小时" },

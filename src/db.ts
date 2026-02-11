@@ -18,6 +18,13 @@ let kvWindowCheckedAt = 0;
 const KV_WINDOW_CACHE_MS = 5_000;
 const KV_SYNC_WINDOW_KEY = "kv_sync_window_until";
 
+export type UserLinuxdoTokenRow = {
+  user_id: number;
+  token: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type LeaderboardRow = {
   sender_id: number;
   sender_name: string;
@@ -43,6 +50,15 @@ export async function ensureSchema(env: Env): Promise<void> {
         group_id INTEGER NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         expires_at TEXT
+      )`
+    ).run();
+
+    await env.DB.prepare(
+      `CREATE TABLE IF NOT EXISTS user_linuxdo_tokens (
+        user_id INTEGER PRIMARY KEY,
+        token TEXT NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )`
     ).run();
 
@@ -81,6 +97,11 @@ export async function ensureSchema(env: Env): Promise<void> {
         "ALTER TABLE group_configs ADD COLUMN spoiler_auto_delete INTEGER DEFAULT 0"
       ).run();
     }
+    if (!columns.has("linuxdo_enabled")) {
+      await env.DB.prepare(
+        "ALTER TABLE group_configs ADD COLUMN linuxdo_enabled INTEGER DEFAULT 0"
+      ).run();
+    }
 
     const msgInfo = await env.DB.prepare("PRAGMA table_info(group_messages)").all<{
       name: string;
@@ -105,7 +126,7 @@ export async function getGroupConfig(env: Env, groupId: number): Promise<GroupCo
   const row = await env.DB.prepare(
     `SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
             target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
-            spoiler_enabled, spoiler_auto_delete
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
      FROM group_configs WHERE group_id = ?`
   )
     .bind(groupId)
@@ -117,7 +138,7 @@ export async function getAllGroups(env: Env): Promise<GroupConfigRow[]> {
   const results = await env.DB.prepare(
     `SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
             target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
-            spoiler_enabled, spoiler_auto_delete
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
      FROM group_configs ORDER BY updated_at DESC`
   ).all<GroupConfigRow>();
   return results.results || [];
@@ -127,7 +148,7 @@ export async function getEnabledGroups(env: Env): Promise<GroupConfigRow[]> {
   const results = await env.DB.prepare(
     `SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
             target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
-            spoiler_enabled, spoiler_auto_delete
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
      FROM group_configs WHERE enabled = 1`
   ).all<GroupConfigRow>();
   return results.results || [];
@@ -137,7 +158,7 @@ export async function getLeaderboardEnabledGroups(env: Env): Promise<GroupConfig
   const results = await env.DB.prepare(
     `SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
             target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
-            spoiler_enabled, spoiler_auto_delete
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
      FROM group_configs WHERE leaderboard_enabled = 1`
   ).all<GroupConfigRow>();
   return results.results || [];
@@ -250,6 +271,18 @@ export async function updateGroupSpoilerAutoDelete(
 ): Promise<void> {
   await env.DB.prepare(
     "UPDATE group_configs SET spoiler_auto_delete = ?, updated_at = ? WHERE group_id = ?"
+  )
+    .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+    .run();
+}
+
+export async function updateGroupLinuxdoEnabled(
+  env: Env,
+  groupId: number,
+  enabled: boolean,
+): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE group_configs SET linuxdo_enabled = ?, updated_at = ? WHERE group_id = ?"
   )
     .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
     .run();
@@ -499,4 +532,35 @@ function detectMediaType(message: TelegramMessage): string | null {
   if (message.sticker) return "sticker";
   if (message.animation) return "animation";
   return null;
+}
+
+export async function getUserLinuxdoToken(env: Env, userId: number): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "SELECT token FROM user_linuxdo_tokens WHERE user_id = ?"
+  )
+    .bind(userId)
+    .first<{ token: string }>();
+  return row?.token || null;
+}
+
+export async function setUserLinuxdoToken(env: Env, userId: number, token: string): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO user_linuxdo_tokens (user_id, token, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       token = excluded.token,
+       updated_at = excluded.updated_at`
+  )
+    .bind(userId, token, now, now)
+    .run();
+}
+
+export async function deleteUserLinuxdoToken(env: Env, userId: number): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "DELETE FROM user_linuxdo_tokens WHERE user_id = ?"
+  )
+    .bind(userId)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
 }

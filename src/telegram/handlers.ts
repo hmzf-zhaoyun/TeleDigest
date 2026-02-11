@@ -14,6 +14,9 @@ import {
   CALLBACK_LEADERBOARD_WINDOW_CUSTOM,
   CALLBACK_LEADERBOARD_WINDOW_MENU,
   CALLBACK_LEADERBOARD_WINDOW_SET,
+  CALLBACK_LINUXDO_TOKEN_DELETE,
+  CALLBACK_LINUXDO_TOKEN_MENU,
+  CALLBACK_LINUXDO_TOKEN_SET,
   CALLBACK_PANEL_LIST,
   CALLBACK_PANEL_OPEN,
   CALLBACK_PANEL_SYNC,
@@ -23,6 +26,8 @@ import {
   CALLBACK_SPOILER_DELETE,
   CALLBACK_SPOILER_MENU,
   CALLBACK_SPOILER_TOGGLE,
+  CALLBACK_LINUXDO_MENU,
+  CALLBACK_LINUXDO_TOGGLE,
   DEFAULT_LEADERBOARD_WINDOW,
   DEFAULT_LEADERBOARD_SCHEDULE,
   DEFAULT_SCHEDULE,
@@ -48,14 +53,17 @@ import {
 } from "../utils";
 import {
   clearAdminAction,
+  deleteUserLinuxdoToken,
   ensureSchema,
   getAdminAction,
   getAllGroups,
   getGroupConfig,
+  getUserLinuxdoToken,
   insertGroupConfig,
   openKvSyncWindow,
   saveGroupMessage,
   setAdminAction,
+  setUserLinuxdoToken,
   updateGroupEnabled,
   updateGroupLeaderboardEnabled,
   updateGroupLeaderboardSchedule,
@@ -63,12 +71,14 @@ import {
   updateGroupSchedule,
   updateGroupSpoilerAutoDelete,
   updateGroupSpoilerEnabled,
+  updateGroupLinuxdoEnabled,
 } from "../db";
 import { parseSchedule } from "../schedule";
 import { runLeaderboardForGroup } from "../leaderboard";
 import { runSummaryForGroup } from "../summary";
 import { answerCallbackQuery, editMessage, sendMessage } from "./api";
 import { handleSpoilerMessage } from "./spoiler";
+import { handleLinuxdoLink } from "./linuxdo";
 import { registerGroup, removeGroup, syncGroupsFromRegistry, updateRegistryFromConfig } from "../registry";
 
 export async function handleTelegramWebhook(
@@ -152,6 +162,14 @@ async function handleMessage(message: TelegramMessage, env: Env): Promise<void> 
   if (isOwner && message.chat.type === "private" && isPanelTrigger(message.text)) {
     await sendGroupList(env, message.chat.id);
     return;
+  }
+
+  // 处理 Linux.do 链接
+  if (message.text) {
+    const handled = await handleLinuxdoLink(message, env);
+    if (handled) {
+      return;
+    }
   }
 
   if (message.chat.type === "group" || message.chat.type === "supergroup") {
@@ -240,6 +258,12 @@ async function handleCommand(
       }
       await handleSyncGroups(chatId, env);
       return;
+    case "set_linuxdo_token":
+      await handleSetLinuxdoToken(command.args, chatId, userId, env);
+      return;
+    case "delete_linuxdo_token":
+      await handleDeleteLinuxdoToken(chatId, userId, env);
+      return;
     default:
       return;
   }
@@ -251,6 +275,10 @@ function buildHelpText(isOwner: boolean): string {
     "",
     "/start - 启动机器人",
     "/help - 显示帮助信息",
+    "",
+    "Linux.do 功能:",
+    "/set_linuxdo_token <token> - 设置你的 Linux.do Token",
+    "/delete_linuxdo_token - 删除你的 Token",
     "",
   ];
 
@@ -639,6 +667,65 @@ async function handleLeaderboard(
   }
 }
 
+async function handleSetLinuxdoToken(
+  args: string[],
+  chatId: number,
+  userId: number | undefined,
+  env: Env,
+): Promise<void> {
+  if (!userId) {
+    await sendMessage(env, chatId, "❌ 无法识别用户");
+    return;
+  }
+
+  if (args.length < 1) {
+    const existingToken = await getUserLinuxdoToken(env, userId);
+    const statusText = existingToken
+      ? "✅ 你已设置 Linux.do Token"
+      : "⭕ 你尚未设置 Linux.do Token";
+    await sendMessage(
+      env,
+      chatId,
+      `${statusText}\n\n` +
+      "用法: /set_linuxdo_token <token>\n\n" +
+      "获取方式:\n" +
+      "1. 登录 linux.do\n" +
+      "2. 按 F12 打开开发者工具\n" +
+      "3. 切换到 Application 标签\n" +
+      "4. 在 Cookies → linux.do 中找到 _t\n" +
+      "5. 复制 _t 的值",
+    );
+    return;
+  }
+
+  const token = args[0].trim();
+  if (!token) {
+    await sendMessage(env, chatId, "❌ Token 不能为空");
+    return;
+  }
+
+  await setUserLinuxdoToken(env, userId, token);
+  await sendMessage(env, chatId, "✅ 已保存你的 Linux.do Token\n\n发送 Linux.do 链接时将使用你的 Token 获取内容。");
+}
+
+async function handleDeleteLinuxdoToken(
+  chatId: number,
+  userId: number | undefined,
+  env: Env,
+): Promise<void> {
+  if (!userId) {
+    await sendMessage(env, chatId, "❌ 无法识别用户");
+    return;
+  }
+
+  const deleted = await deleteUserLinuxdoToken(env, userId);
+  if (deleted) {
+    await sendMessage(env, chatId, "✅ 已删除你的 Linux.do Token");
+  } else {
+    await sendMessage(env, chatId, "ℹ️ 你尚未设置 Linux.do Token");
+  }
+}
+
 async function handleCallbackQuery(
   callbackQuery: TelegramCallbackQuery,
   env: Env,
@@ -791,6 +878,22 @@ async function processCallbackData(
     return false;
   }
 
+  if (namespace === "ldo") {
+    if (!Number.isFinite(groupId)) {
+      await sendMessage(env, chatId, "❌ 群组ID无效");
+      return true;
+    }
+    if (action === "menu") {
+      await sendLinuxdoMenu(env, chatId, groupId, messageId);
+      return true;
+    }
+    if (action === "toggle") {
+      await toggleLinuxdoEnabled(env, chatId, groupId, messageId);
+      return true;
+    }
+    return false;
+  }
+
   if (namespace === "lb") {
     if (!Number.isFinite(groupId)) {
       await sendMessage(env, chatId, "❌ 群组ID无效");
@@ -838,6 +941,34 @@ async function processCallbackData(
         chatId,
         "✍️ 请输入排行榜统计窗口（例如 30m / 2h / 1d）。\n发送“取消”可退出。",
       );
+      return true;
+    }
+    return false;
+  }
+
+  if (namespace === "ldt") {
+    if (action === "menu") {
+      await sendLinuxdoTokenMenu(env, chatId, userId, messageId);
+      return true;
+    }
+    if (action === "set") {
+      await setAdminAction(env, userId, "set_linuxdo_token", 0, ADMIN_ACTION_TTL_MINUTES);
+      await sendMessage(
+        env,
+        chatId,
+        "✍️ 请输入你的 Linux.do Token（_t cookie 值）。\n发送 \"取消\" 可退出。\n\n" +
+        "获取方式:\n" +
+        "1. 登录 linux.do\n" +
+        "2. 按 F12 打开开发者工具\n" +
+        "3. 切换到 Application 标签\n" +
+        "4. 在 Cookies → linux.do 中找到 _t\n" +
+        "5. 复制 _t 的值",
+      );
+      return true;
+    }
+    if (action === "delete") {
+      await deleteUserLinuxdoToken(env, userId);
+      await sendLinuxdoTokenMenu(env, chatId, userId, messageId);
       return true;
     }
     return false;
@@ -903,6 +1034,12 @@ async function handlePendingAdminAction(
     }
     return true;
   }
+  if (pending.action === "set_linuxdo_token") {
+    await setUserLinuxdoToken(env, pending.user_id, content);
+    await clearAdminAction(env, pending.user_id);
+    await sendMessage(env, message.chat.id, "✅ 已保存你的 Linux.do Token");
+    return true;
+  }
   return false;
 }
 
@@ -931,6 +1068,9 @@ async function sendGroupList(
   });
   keyboard.push([
     { text: "🔁 同步群组", callback_data: CALLBACK_PANEL_SYNC },
+  ]);
+  keyboard.push([
+    { text: "🔗 我的 Linuxdo Token", callback_data: CALLBACK_LINUXDO_TOKEN_MENU },
   ]);
   keyboard.push([
     { text: "🔄 刷新", callback_data: CALLBACK_PANEL_LIST },
@@ -970,6 +1110,7 @@ async function sendGroupActions(
     `统计窗口: ${config.leaderboard_window || DEFAULT_LEADERBOARD_WINDOW}`,
     `剧透模式: ${spoilerEnabled ? "✅ 开启" : "⭕ 关闭"}`,
     `自动删除: ${spoilerAutoDelete ? "✅ 开启" : "⭕ 关闭"}`,
+    `Linuxdo解析: ${Number(config.linuxdo_enabled) === 1 ? "✅ 开启" : "⭕ 关闭"}`,
     `上次总结: ${lastSummary}`,
     `上次排行榜: ${lastLeaderboard}`,
   ];
@@ -978,6 +1119,7 @@ async function sendGroupActions(
     [{ text: "总结设置", callback_data: `${CALLBACK_GROUP_SUMMARY_MENU}:${groupId}` }],
     [{ text: "排行榜设置", callback_data: `${CALLBACK_GROUP_LEADERBOARD_MENU}:${groupId}` }],
     [{ text: "剧透设置", callback_data: `${CALLBACK_SPOILER_MENU}:${groupId}` }],
+    [{ text: "Linuxdo解析", callback_data: `${CALLBACK_LINUXDO_MENU}:${groupId}` }],
     [{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }],
   ];
 
@@ -1273,6 +1415,92 @@ async function toggleSpoilerAutoDelete(
   await updateGroupSpoilerAutoDelete(env, groupId, next);
   await updateRegistryFromConfig(env, { ...config, spoiler_auto_delete: next ? 1 : 0 });
   await sendSpoilerMenu(env, chatId, groupId, messageId);
+}
+
+async function sendLinuxdoMenu(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+
+  const linuxdoEnabled = Number(config.linuxdo_enabled) === 1;
+
+  const lines = [
+    "🔗 Linuxdo 链接解析设置",
+    `当前状态: ${linuxdoEnabled ? "✅ 开启" : "⭕ 关闭"}`,
+  ];
+
+  const keyboard = [
+    [
+      {
+        text: linuxdoEnabled ? "关闭解析" : "开启解析",
+        callback_data: `${CALLBACK_LINUXDO_TOGGLE}:${groupId}`,
+      },
+    ],
+    [{ text: "⬅️ 返回", callback_data: `${CALLBACK_GROUP_SHOW}:${groupId}` }],
+  ];
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function toggleLinuxdoEnabled(
+  env: Env,
+  chatId: number,
+  groupId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const config = await getGroupConfig(env, groupId);
+  if (!config) {
+    await sendPanelMessage(env, chatId, "❌ 群组未配置或暂无消息记录", messageId);
+    return;
+  }
+  const next = Number(config.linuxdo_enabled) !== 1;
+  await updateGroupLinuxdoEnabled(env, groupId, next);
+  await updateRegistryFromConfig(env, { ...config, linuxdo_enabled: next ? 1 : 0 });
+  await sendLinuxdoMenu(env, chatId, groupId, messageId);
+}
+
+async function sendLinuxdoTokenMenu(
+  env: Env,
+  chatId: number,
+  userId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const existingToken = await getUserLinuxdoToken(env, userId);
+  const hasToken = !!existingToken;
+
+  const lines = [
+    "🔗 我的 Linux.do Token",
+    "",
+    `状态: ${hasToken ? "✅ 已设置" : "⭕ 未设置"}`,
+    "",
+    "设置 Token 后，发送 Linux.do 链接时将使用你的 Token 获取内容。",
+  ];
+
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  keyboard.push([
+    { text: hasToken ? "更新 Token" : "设置 Token", callback_data: CALLBACK_LINUXDO_TOKEN_SET },
+  ]);
+  if (hasToken) {
+    keyboard.push([
+      { text: "删除 Token", callback_data: CALLBACK_LINUXDO_TOKEN_DELETE },
+    ]);
+  }
+  keyboard.push([
+    { text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST },
+  ]);
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
 }
 
 async function toggleLeaderboardEnabled(
