@@ -68,7 +68,8 @@ function formatTime(iso: string): string {
 async function summarizeMessages(messages: string[], env: Env): Promise<SummaryResult> {
   const provider = normalizeProvider(env.LLM_PROVIDER);
   const apiKey = env.LLM_API_KEY || "";
-  const model = env.LLM_MODEL || defaultModel(provider);
+  const modelOrDefault = defaultModel(provider);
+  const model = env.LLM_MODEL || modelOrDefault;
   const maxTokens = Math.trunc(
     parseNumberEnv(env.LLM_MAX_TOKENS, DEFAULT_LLM_MAX_TOKENS, { min: 1 }),
   );
@@ -79,6 +80,23 @@ async function summarizeMessages(messages: string[], env: Env): Promise<SummaryR
 
   if (!apiKey) {
     return { success: false, content: "", error: "LLM API Key 未配置" };
+  }
+
+  if (provider === "custom") {
+    if (!env.LLM_API_BASE) {
+      return {
+        success: false,
+        content: "",
+        error: "自定义 LLM Provider 必须配置 LLM_API_BASE（完整的 API 端点 URL）",
+      };
+    }
+    if (!model) {
+      return {
+        success: false,
+        content: "",
+        error: "自定义 LLM Provider 必须配置 LLM_MODEL",
+      };
+    }
   }
 
   const prompt = buildDefaultPrompt(messages);
@@ -92,6 +110,9 @@ async function summarizeMessages(messages: string[], env: Env): Promise<SummaryR
     }
     if (provider === "gemini") {
       return await callGemini(prompt, apiKey, model, maxTokens, temperature, env.LLM_API_BASE);
+    }
+    if (provider === "custom") {
+      return await callCustom(prompt, apiKey, model, maxTokens, temperature, env.LLM_API_BASE!);
     }
     return await callOpenAI(prompt, apiKey, model, maxTokens, temperature, env.LLM_API_BASE);
   } catch (error) {
@@ -139,12 +160,13 @@ function buildDefaultPrompt(messages: string[]): string {
 
 function normalizeProvider(raw: string | undefined): LlmProvider {
   const value = (raw || "openai").trim().toLowerCase();
-  if (value === "custom") return "openai";
+  if (value === "openai") return "openai";
   if (value === "openai-responses" || value === "openai_responses" || value === "openairesponses") {
     return "openai-responses";
   }
   if (value === "claude") return "claude";
   if (value === "gemini") return "gemini";
+  if (value === "custom" || value !== "openai") return "custom";
   return "openai";
 }
 
@@ -152,6 +174,7 @@ function defaultModel(provider: LlmProvider): string {
   if (provider === "openai-responses") return "gpt-4.1-mini";
   if (provider === "claude") return "claude-3-haiku-20240307";
   if (provider === "gemini") return "gemini-1.5-flash";
+  if (provider === "custom") return "";
   return "gpt-4o-mini";
 }
 
@@ -264,6 +287,53 @@ async function callOpenAI(
   const content = (data.choices?.[0]?.message?.content || "").trim();
   if (!content) {
     return { success: false, content: "", error: "OpenAI 返回空内容" };
+  }
+  return { success: true, content };
+}
+
+/**
+ * 自定义 provider：使用用户提供的完整 API 端点
+ * 假设兼容 OpenAI Chat Completions 格式，但直接使用 LLM_API_BASE 作为请求 URL
+ */
+async function callCustom(
+  prompt: string,
+  apiKey: string,
+  model: string,
+  maxTokens: number,
+  temperature: number,
+  apiBase: string,
+): Promise<SummaryResult> {
+  const url = apiBase.replace(/\/$/, "");
+  const payload = {
+    model,
+    messages: [
+      { role: "system", content: "你是一个专业的消息总结助手。" },
+      { role: "user", content: prompt },
+    ],
+    max_tokens: maxTokens,
+    temperature,
+  };
+
+  const response = await fetchWithTimeout(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    return { success: false, content: "", error: `自定义 API 错误: ${text}` };
+  }
+
+  const data = (await response.json()) as {
+    choices?: { message?: { content?: string } }[];
+  };
+  const content = (data.choices?.[0]?.message?.content || "").trim();
+  if (!content) {
+    return { success: false, content: "", error: "自定义 LLM 返回空内容" };
   }
   return { success: true, content };
 }

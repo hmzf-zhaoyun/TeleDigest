@@ -141,7 +141,7 @@ export type SummaryResult = {
   error?: string;
 };
 
-export type LlmProvider = "openai" | "openai-responses" | "claude" | "gemini";
+export type LlmProvider = "openai" | "openai-responses" | "claude" | "gemini" | "custom";
 
 export type InlineKeyboardButton = {
   text: string;
