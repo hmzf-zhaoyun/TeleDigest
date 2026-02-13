@@ -3,7 +3,7 @@ import { escapeHtml } from "../utils";
 import { getGroupConfig } from "../db";
 import { sendMessage, telegramApi } from "./api";
 
-const MEDIA_GROUP_DEBOUNCE_MS = 700;
+const MEDIA_GROUP_DEBOUNCE_MS = 1500;
 
 type PendingMediaItem = {
   type: "photo" | "video";
@@ -22,7 +22,7 @@ type PendingMediaGroup = {
 
 const pendingMediaGroups = new Map<string, PendingMediaGroup>();
 
-export async function handleSpoilerMessage(message: TelegramMessage, env: Env): Promise<void> {
+export async function handleSpoilerMessage(message: TelegramMessage, env: Env, ctx?: ExecutionContext): Promise<void> {
   const chat = message.chat;
   if (chat.type !== "group" && chat.type !== "supergroup") {
     return;
@@ -66,11 +66,12 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env): 
 
   try {
     if (message.media_group_id) {
-      const queued = await queueMediaGroupSpoiler(
+      const queued = queueMediaGroupSpoiler(
         message,
         finalText,
         env,
         Number(config.spoiler_auto_delete) === 1,
+        ctx,
       );
       if (queued) {
         return;
@@ -152,12 +153,13 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env): 
   }
 }
 
-async function queueMediaGroupSpoiler(
+function queueMediaGroupSpoiler(
   message: TelegramMessage,
   captionHtml: string,
   env: Env,
   autoDelete: boolean,
-): Promise<boolean> {
+  ctx?: ExecutionContext,
+): boolean {
   const groupId = message.media_group_id;
   if (!groupId) {
     return false;
@@ -190,7 +192,10 @@ async function queueMediaGroupSpoiler(
   entry.lastUpdated = now;
   pendingMediaGroups.set(key, entry);
 
-  await flushMediaGroupWhenIdle(key, now, env);
+  const flushPromise = flushMediaGroupWhenIdle(key, now, env);
+  if (ctx) {
+    ctx.waitUntil(flushPromise);
+  }
   return true;
 }
 

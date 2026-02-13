@@ -79,6 +79,7 @@ import { runSummaryForGroup } from "../summary";
 import { answerCallbackQuery, editMessage, sendMessage } from "./api";
 import { handleSpoilerMessage } from "./spoiler";
 import { handleLinuxdoLink } from "./linuxdo";
+import { handleQuoteCommand } from "./quote";
 import { registerGroup, removeGroup, syncGroupsFromRegistry, updateRegistryFromConfig } from "../registry";
 
 export async function handleTelegramWebhook(
@@ -112,14 +113,14 @@ export async function handleTelegramWebhook(
   }
 
   try {
-    await processUpdate(update, env);
+    await processUpdate(update, env, _ctx);
   } catch (error) {
     console.error("processUpdate failed", error);
   }
   return new Response("ok");
 }
 
-async function processUpdate(update: TelegramUpdate, env: Env): Promise<void> {
+async function processUpdate(update: TelegramUpdate, env: Env, ctx: ExecutionContext): Promise<void> {
   const message =
     update.message ||
     update.edited_message ||
@@ -127,7 +128,7 @@ async function processUpdate(update: TelegramUpdate, env: Env): Promise<void> {
     update.edited_channel_post;
 
   if (message) {
-    await handleMessage(message, env);
+    await handleMessage(message, env, ctx);
   }
 
   if (update.callback_query?.id) {
@@ -139,11 +140,11 @@ async function processUpdate(update: TelegramUpdate, env: Env): Promise<void> {
   }
 }
 
-async function handleMessage(message: TelegramMessage, env: Env): Promise<void> {
+async function handleMessage(message: TelegramMessage, env: Env, ctx: ExecutionContext): Promise<void> {
   const userId = message.from?.id;
   const isOwner = userId ? isOwnerUser(env, userId) : false;
 
-  if (isOwner && message.chat.type === "private") {
+  if (isOwner && userId && message.chat.type === "private") {
     const pending = await getAdminAction(env, userId);
     if (pending && message.text) {
       const consumed = await handlePendingAdminAction(pending, message, env);
@@ -174,7 +175,7 @@ async function handleMessage(message: TelegramMessage, env: Env): Promise<void> 
 
   if (message.chat.type === "group" || message.chat.type === "supergroup") {
     await registerGroup(env, message.chat.id, message.chat.title || "");
-    await handleSpoilerMessage(message, env);
+    await handleSpoilerMessage(message, env, ctx);
     await saveGroupMessage(message, env);
   }
 }
@@ -263,6 +264,9 @@ async function handleCommand(
       return;
     case "delete_linuxdo_token":
       await handleDeleteLinuxdoToken(chatId, userId, env);
+      return;
+    case "q":
+      await handleQuoteCommand(message, env);
       return;
     default:
       return;

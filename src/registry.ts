@@ -49,8 +49,12 @@ export async function registerGroup(
   if (!(await canUseKv(env))) {
     return;
   }
+  const kv = env.GROUPS_KV;
+  if (!kv) {
+    return;
+  }
   const key = `${GROUP_PREFIX}${groupId}`;
-  const existing = await env.GROUPS_KV.get(key, "json") as GroupRegistryEntry | null;
+  const existing = await kv.get(key, "json") as GroupRegistryEntry | null;
   const entry: GroupRegistryEntry = {
     ...(existing || {}),
     group_id: groupId,
@@ -58,14 +62,18 @@ export async function registerGroup(
     updated_at: new Date().toISOString(),
     ...meta,
   };
-  await env.GROUPS_KV.put(key, JSON.stringify(entry));
+  await kv.put(key, JSON.stringify(entry));
 }
 
 export async function removeGroup(env: Env, groupId: number): Promise<void> {
   if (!(await canUseKv(env))) {
     return;
   }
-  await env.GROUPS_KV.delete(`${GROUP_PREFIX}${groupId}`);
+  const kv = env.GROUPS_KV;
+  if (!kv) {
+    return;
+  }
+  await kv.delete(`${GROUP_PREFIX}${groupId}`);
 }
 
 export async function updateRegistryFromConfig(
@@ -97,6 +105,7 @@ export async function syncGroupsFromRegistry(env: Env): Promise<{
     return { total: 0, inserted: 0, updated: 0, skipped: 0, unavailable: true };
   }
 
+  const kv = env.GROUPS_KV;
   let cursor: string | undefined = undefined;
   let total = 0;
   let inserted = 0;
@@ -104,10 +113,10 @@ export async function syncGroupsFromRegistry(env: Env): Promise<{
   let skipped = 0;
 
   do {
-    const list = await env.GROUPS_KV.list({ prefix: GROUP_PREFIX, cursor });
+    const list: KVNamespaceListResult<unknown, string> = await kv.list({ prefix: GROUP_PREFIX, cursor });
     cursor = list.list_complete ? undefined : list.cursor;
     for (const key of list.keys) {
-      const entry = await env.GROUPS_KV.get(key.name, "json") as GroupRegistryEntry | null;
+      const entry = await kv.get(key.name, "json") as GroupRegistryEntry | null;
       if (!entry || !Number.isFinite(entry.group_id)) {
         skipped += 1;
         continue;

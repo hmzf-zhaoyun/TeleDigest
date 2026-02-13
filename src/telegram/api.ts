@@ -85,6 +85,113 @@ export async function editMessage(
   });
 }
 
+export async function sendPhoto(
+  env: Env,
+  chatId: number,
+  photoBuffer: ArrayBuffer,
+  options: { reply_to_message_id?: number } = {},
+): Promise<void> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return;
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("photo", new Blob([photoBuffer], { type: "image/png" }), "quote.png");
+  if (options.reply_to_message_id) {
+    form.append("reply_to_message_id", String(options.reply_to_message_id));
+  }
+
+  const response = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendPhoto`, {
+    method: "POST",
+    body: form,
+  });
+  const data = (await response.json()) as { ok: boolean; description?: string };
+  if (!data.ok) {
+    throw new Error(data.description || "Telegram sendPhoto error");
+  }
+}
+
+/** 获取用户头像照片列表，返回最小尺寸的 file_id */
+export async function getUserAvatarFileId(
+  env: Env,
+  userId: number,
+): Promise<string | null> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(
+      `${TELEGRAM_API_BASE}/bot${token}/getUserProfilePhotos?user_id=${userId}&limit=1`,
+    );
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { photos: Array<Array<{ file_id: string; width: number }>> };
+    };
+    if (!data.ok || !data.result?.photos?.length) return null;
+    const sizes = data.result.photos[0];
+    // 取最小尺寸（第一个），足够 40px 头像使用
+    return sizes[0]?.file_id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** 下载 Telegram 文件，返回 ArrayBuffer */
+export async function downloadTelegramFile(
+  env: Env,
+  fileId: string,
+): Promise<ArrayBuffer | null> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const fileRes = await fetch(
+      `${TELEGRAM_API_BASE}/bot${token}/getFile?file_id=${fileId}`,
+    );
+    const fileData = (await fileRes.json()) as {
+      ok: boolean;
+      result?: { file_path: string };
+    };
+    if (!fileData.ok || !fileData.result?.file_path) return null;
+    const dlRes = await fetch(
+      `${TELEGRAM_API_BASE}/file/bot${token}/${fileData.result.file_path}`,
+    );
+    if (!dlRes.ok) return null;
+    return dlRes.arrayBuffer();
+  } catch {
+    return null;
+  }
+}
+
+/** 发送贴纸（WebP/PNG） */
+export async function sendSticker(
+  env: Env,
+  chatId: number,
+  stickerBuffer: ArrayBuffer,
+  options: { reply_to_message_id?: number } = {},
+): Promise<void> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return;
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append(
+    "sticker",
+    new Blob([stickerBuffer], { type: "image/webp" }),
+    "quote.webp",
+  );
+  if (options.reply_to_message_id) {
+    form.append("reply_to_message_id", String(options.reply_to_message_id));
+  }
+
+  const response = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendSticker`, {
+    method: "POST",
+    body: form,
+  });
+  const data = (await response.json()) as { ok: boolean; description?: string };
+  if (!data.ok) {
+    throw new Error(data.description || "Telegram sendSticker error");
+  }
+}
+
 export async function telegramApi(env: Env, method: string, payload: unknown): Promise<void> {
   const token = env.TG_BOT_TOKEN;
   if (!token) {

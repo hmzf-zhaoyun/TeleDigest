@@ -42,6 +42,8 @@ export type TelegramMessage = {
   entities?: TelegramEntity[];
   from?: TelegramUser;
   chat: TelegramChat;
+  reply_to_message?: TelegramMessage;
+  quote?: TelegramTextQuote;
   forward_origin?: TelegramForwardOrigin;
   forward_from?: TelegramUser;
   forward_from_chat?: TelegramChat;
@@ -56,6 +58,13 @@ export type TelegramMessage = {
   sticker?: unknown;
   animation?: unknown;
   video_note?: unknown;
+};
+
+export type TelegramTextQuote = {
+  text: string;
+  position: number;
+  entities?: TelegramEntity[];
+  is_manual?: boolean;
 };
 
 export type TelegramEntity = {
