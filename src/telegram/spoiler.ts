@@ -332,11 +332,20 @@ function sleep(ms: number): Promise<void> {
 }
 
 function shouldTriggerSpoiler(message: TelegramMessage): boolean {
-  if (isForwardedMessage(message)) {
+  if (isForwardedMessage(message) && hasMedia(message)) {
     return true;
   }
   const text = message.text || message.caption || "";
   return /#nsfw/i.test(text);
+}
+
+function hasMedia(message: TelegramMessage): boolean {
+  return Boolean(
+    (message.photo && message.photo.length > 0) ||
+      message.video ||
+      message.animation ||
+      message.document,
+  );
 }
 
 function isForwardedMessage(message: TelegramMessage): boolean {
