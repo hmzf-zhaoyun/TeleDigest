@@ -111,6 +111,34 @@ export async function sendPhoto(
   }
 }
 
+/** 以文档形式发送图片，避免 Telegram 压缩 */
+export async function sendDocument(
+  env: Env,
+  chatId: number,
+  docBuffer: ArrayBuffer,
+  filename: string,
+  options: { reply_to_message_id?: number } = {},
+): Promise<void> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return;
+
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("document", new Blob([docBuffer], { type: "image/png" }), filename);
+  if (options.reply_to_message_id) {
+    form.append("reply_to_message_id", String(options.reply_to_message_id));
+  }
+
+  const response = await fetch(`${TELEGRAM_API_BASE}/bot${token}/sendDocument`, {
+    method: "POST",
+    body: form,
+  });
+  const data = (await response.json()) as { ok: boolean; description?: string };
+  if (!data.ok) {
+    throw new Error(data.description || "Telegram sendDocument error");
+  }
+}
+
 /** 获取用户头像照片列表，返回最小尺寸的 file_id */
 export async function getUserAvatarFileId(
   env: Env,
@@ -175,8 +203,8 @@ export async function sendSticker(
   form.append("chat_id", String(chatId));
   form.append(
     "sticker",
-    new Blob([stickerBuffer], { type: "image/webp" }),
-    "quote.webp",
+    new Blob([stickerBuffer], { type: "image/png" }),
+    "quote.png",
   );
   if (options.reply_to_message_id) {
     form.append("reply_to_message_id", String(options.reply_to_message_id));
