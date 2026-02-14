@@ -15,7 +15,7 @@ import {
 
 /* ── 字体 ── */
 const FONT_URL =
-  "https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@latest/chinese-simplified-400-normal.ttf";
+  "https://cdn.jsdelivr.net/fontsource/fonts/noto-sans-sc@latest/chinese-simplified-500-normal.ttf";
 
 let fontCache: Uint8Array | null = null;
 
@@ -105,17 +105,18 @@ function segmentLine(
 }
 
 /* ── 布局常量 ── */
-const CARD_MAX_WIDTH = 480;
-const FONT_SIZE_NAME = 15;
-const FONT_SIZE_TEXT = 16;
-const FONT_SIZE_TIME = 12;
-const LINE_HEIGHT = 22;
-const AVATAR_SIZE = 40;
-const BUBBLE_RADIUS = 12;
-const BUBBLE_PAD_X = 16;
-const BUBBLE_PAD_Y = 12;
-const GAP_AVATAR_BUBBLE = 10;
-const PADDING = 8;
+const CARD_MAX_WIDTH = 580;
+const FONT_SIZE_NAME = 26;
+const FONT_SIZE_TEXT = 28;
+const FONT_SIZE_TIME = 18;
+const LINE_HEIGHT = 42;
+const AVATAR_SIZE = 64;
+const BUBBLE_RADIUS = 18;
+const BUBBLE_PAD_X = 20;
+const BUBBLE_PAD_Y = 18;
+const GAP_AVATAR_BUBBLE = 14;
+const PADDING = 16;
+const MAX_BUBBLE_TEXT_WIDTH = 420;
 
 /* ── 字符宽度测量 ── */
 
@@ -250,7 +251,7 @@ function renderLineSegments(
   for (const seg of segs) {
     if (seg.type === "text") {
       parts.push(
-        `<text x="${x}" y="${baselineY}" font-size="${fontSize}" fill="${fill}" font-family="${ff}">${escapeXml(seg.content)}</text>`,
+        `<text x="${x}" y="${baselineY}" font-size="${fontSize}" font-weight="500" fill="${fill}" font-family="${ff}">${escapeXml(seg.content)}</text>`,
       );
       x += measureText(seg.content, fontSize);
     } else {
@@ -267,7 +268,6 @@ function renderLineSegments(
 
 /* ── SVG 渲染 ── */
 
-const STICKER_MAX_LINES = 6;
 
 function renderMessageSvg(
   senderName: string,
@@ -278,8 +278,9 @@ function renderMessageSvg(
   emojiMap: Map<string, string>,
   withBackground = false,
 ): string {
-  const maxBubbleContent =
+  const layoutMax =
     CARD_MAX_WIDTH - PADDING * 2 - AVATAR_SIZE - GAP_AVATAR_BUBBLE - BUBBLE_PAD_X * 2;
+  const maxBubbleContent = Math.min(layoutMax, MAX_BUBBLE_TEXT_WIDTH);
   const lines = wrapText(text, maxBubbleContent);
 
   const maxLineW = Math.max(
@@ -319,7 +320,7 @@ function renderMessageSvg(
     const initial = senderName.charAt(0).toUpperCase();
     avatarSvg = `
   <circle cx="${avatarCx}" cy="${avatarCy}" r="${avatarR}" fill="#5B8AF5"/>
-  <text x="${avatarCx}" y="${avatarCy + 6}" text-anchor="middle" font-size="18" fill="#FFF" font-family="${FF}" font-weight="600">${escapeXml(initial)}</text>`;
+  <text x="${avatarCx}" y="${avatarCy + 6}" text-anchor="middle" font-size="20" fill="#FFF" font-family="${FF}" font-weight="600">${escapeXml(initial)}</text>`;
   }
 
   // 文本行：使用 segment 渲染以支持 emoji 内联
@@ -327,7 +328,7 @@ function renderMessageSvg(
     .map((line, i) => {
       const y = bubbleY + BUBBLE_PAD_Y + nameLineH + i * LINE_HEIGHT + FONT_SIZE_TEXT;
       const x = bubbleX + BUBBLE_PAD_X + (isPartial ? 8 : 0);
-      return renderLineSegments(line, emojiMap, x, y, FONT_SIZE_TEXT, FF, "#E1E1E1");
+      return renderLineSegments(line, emojiMap, x, y, FONT_SIZE_TEXT, FF, "#FFFFFF");
     })
     .join("\n    ");
 
@@ -343,22 +344,23 @@ function renderMessageSvg(
   const nameSvg = renderLineSegments(senderName, emojiMap, nameX, nameY, FONT_SIZE_NAME, FF, "#8774E1");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${cardW}" height="${cardH}">
-  ${withBackground ? `<rect width="${cardW}" height="${cardH}" rx="16" fill="#181818"/>` : ""}
+  ${withBackground ? `<rect width="${cardW}" height="${cardH}" rx="16" fill="#0E1621"/>` : ""}
   ${avatarSvg}
-  <rect x="${bubbleX}" y="${bubbleY}" width="${bubbleW}" height="${bubbleH}" rx="${BUBBLE_RADIUS}" fill="#2B2B2B"/>
+  <rect x="${bubbleX}" y="${bubbleY}" width="${bubbleW}" height="${bubbleH}" rx="${BUBBLE_RADIUS}" fill="#182533"/>
   ${nameSvg}
   ${partialBar}
   ${textLines}
-  <text x="${bubbleX + bubbleW - BUBBLE_PAD_X}" y="${timeY}" text-anchor="end" font-size="${FONT_SIZE_TIME}" fill="#888" font-family="${FF}">${escapeXml(time)}</text>
+  <text x="${bubbleX + bubbleW - BUBBLE_PAD_X}" y="${timeY}" text-anchor="end" font-size="${FONT_SIZE_TIME}" fill="#AAAAAA" font-family="${FF}">${escapeXml(time)}</text>
 </svg>`;
 }
 
 /* ── SVG → PNG ── */
 
+/** 渲染到 512px 宽，精确匹配 Telegram 贴纸原生尺寸 */
 async function svgToPng(svg: string, width: number): Promise<ArrayBuffer> {
   const fontData = await loadFont();
   const resvg = new Resvg(svg, {
-    fitTo: { mode: "width", value: width * 2 },
+    fitTo: { mode: "width", value: 2048 },
     font: {
       fontBuffers: [fontData],
       defaultFontFamily: "Noto Sans SC",
@@ -399,20 +401,12 @@ export async function handleQuoteCommand(
     prefetchEmojis(senderName + "\n" + displayText),
   ]);
 
-  const svg = renderMessageSvg(senderName, displayText, time, isPartial, avatarBase64, emojiMap);
+  const svg = renderMessageSvg(senderName, displayText, time, isPartial, avatarBase64, emojiMap, true);
   const widthMatch = svg.match(/width="(\d+)"/);
   const svgWidth = widthMatch ? Number(widthMatch[1]) : CARD_MAX_WIDTH;
 
-  // 根据行数决定发送方式：短消息用贴纸（透明），长消息用图片（可放大）
-  const maxBubbleContent =
-    CARD_MAX_WIDTH - PADDING * 2 - AVATAR_SIZE - GAP_AVATAR_BUBBLE - BUBBLE_PAD_X * 2;
-  const lineCount = wrapText(displayText, maxBubbleContent).length;
-  const usePhoto = lineCount > STICKER_MAX_LINES;
-
-  const finalSvg = usePhoto
-    ? renderMessageSvg(senderName, displayText, time, isPartial, avatarBase64, emojiMap, true)
-    : svg;
-  const png = await svgToPng(finalSvg, svgWidth);
+  // 统一用贴纸发送，显示尺寸更大；失败时 fallback 到图片
+  const png = await svgToPng(svg, svgWidth);
 
   // 删除用户的 /q 命令消息
   telegramApi(env, "deleteMessage", {
@@ -420,13 +414,9 @@ export async function handleQuoteCommand(
     message_id: message.message_id,
   }).catch(() => {});
 
-  if (usePhoto) {
+  try {
+    await sendSticker(env, message.chat.id, png);
+  } catch {
     await sendPhoto(env, message.chat.id, png);
-  } else {
-    try {
-      await sendSticker(env, message.chat.id, png);
-    } catch {
-      await sendPhoto(env, message.chat.id, png);
-    }
   }
 }
