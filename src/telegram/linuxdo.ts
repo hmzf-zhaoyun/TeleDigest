@@ -45,14 +45,14 @@ export async function fetchLinuxdoPost(jsonUrl: string, env: Env, userToken?: st
   const cookie = rawCookie ? buildCookieString(rawCookie) : null;
   console.log(`[linuxdo] url=${jsonUrl} cookieSource=${userToken ? "user" : env.LINUXDO_COOKIE ? "env" : "none"} cookieLen=${cookie?.length ?? 0} hasScrape=${!!env.SCRAPE_DO_TOKEN}`);
 
-  // 策略1: scrape.do 代理 + cookie（绕过 Cloudflare 且带认证）
+  // 策略1: scrape.do 代理 + cookie（绕 CF 且带认证，geoCode 锁定香港减少 IP 漂移）
   if (env.SCRAPE_DO_TOKEN) {
     const result = await fetchViaScrapeProxy(jsonUrl, env.SCRAPE_DO_TOKEN, cookie);
     console.log(`[linuxdo] scrape.do result=${!!result}`);
     if (result) return result;
   }
 
-  // 策略2: cookie 直连（无代理时降级）
+  // 策略2: cookie 直连降级（Workers 出口可能被 CF 拦截）
   if (cookie) {
     const result = await fetchDirect(jsonUrl, cookie);
     console.log(`[linuxdo] direct result=${!!result}`);
@@ -64,7 +64,7 @@ export async function fetchLinuxdoPost(jsonUrl: string, env: Env, userToken?: st
 
 async function fetchViaScrapeProxy(jsonUrl: string, token: string, cookie?: string | null): Promise<LinuxdoPost | null> {
   try {
-    let proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}`;
+    let proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}&geoCode=sg`;
     if (cookie) {
       proxyUrl += `&setCookies=${encodeURIComponent(cookie)}`;
     }
