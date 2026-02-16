@@ -1,5 +1,6 @@
 # 环境变量（包含敏感信息）
 .env.worker
+.dev.vars
 
 # Python 缓存
 __pycache__/
@@ -45,3 +46,14 @@ yarn-error.log*
 .yarn
 package-lock.json
 yarn.lock
+
+# Cloudflare Workers
+.wrangler/
+
+# AI 工具
+.claude/
+.omc/
+
+# 本地脚本和文档
+docs/
+scripts/
