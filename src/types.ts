@@ -40,6 +40,7 @@ export type TelegramMessage = {
   caption?: string;
   entities?: TelegramEntity[];
   from?: TelegramUser;
+  sender_chat?: TelegramChat;
   chat: TelegramChat;
   reply_to_message?: TelegramMessage;
   quote?: TelegramTextQuote;

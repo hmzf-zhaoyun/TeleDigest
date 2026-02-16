@@ -6,6 +6,7 @@ import { Resvg } from "@cf-wasm/resvg";
 import type { Env, TelegramMessage, TelegramUser } from "../types";
 import {
   getUserAvatarFileId,
+  getChatAvatarFileId,
   downloadTelegramFile,
   sendSticker,
   sendPhoto,
@@ -209,6 +210,26 @@ async function fetchAvatarBase64(
   }
 }
 
+async function fetchChatAvatarBase64(
+  env: Env,
+  chatId: number,
+): Promise<string | null> {
+  try {
+    const fileId = await getChatAvatarFileId(env, chatId);
+    if (!fileId) return null;
+    const buf = await downloadTelegramFile(env, fileId);
+    if (!buf) return null;
+    const bytes = new Uint8Array(buf);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  } catch {
+    return null;
+  }
+}
+
 /* ── 工具函数 ── */
 
 function buildDisplayName(user?: TelegramUser): string {
@@ -391,14 +412,21 @@ export async function handleQuoteCommand(
     return;
   }
 
+  const senderChat = replied.sender_chat;
   const sender = replied.from;
-  const senderName = buildDisplayName(sender);
+  const senderName = (senderChat && senderChat.type === "channel")
+    ? (senderChat.title || senderChat.username || "频道用户")
+    : buildDisplayName(sender);
   const time = formatTime(replied.date);
   const isPartial = Boolean(quote?.text && quote.is_manual);
 
+  const isChannelIdentity = !!(senderChat && senderChat.type === "channel");
+
   // 并行：获取头像 + 预取 emoji SVG
   const [avatarBase64, emojiMap] = await Promise.all([
-    fetchAvatarBase64(env, sender),
+    isChannelIdentity
+      ? fetchChatAvatarBase64(env, senderChat!.id)
+      : fetchAvatarBase64(env, sender),
     prefetchEmojis(senderName + "\n" + displayText),
   ]);
 

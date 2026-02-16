@@ -468,9 +468,15 @@ export async function saveGroupMessage(message: TelegramMessage, env: Env): Prom
   const groupName = chat.title || "";
   await upsertGroupFromMessage(env, groupId, groupName);
 
+  // Premium 用户用频道身份发言时，sender_chat 是频道，from 可能仍是用户
+  const senderChat = message.sender_chat;
   const sender = message.from;
-  const senderName = buildSenderName(sender);
-  const senderIsBot = sender?.is_bot ? 1 : 0;
+  const isChannelIdentity = senderChat && senderChat.type === "channel";
+  const senderName = isChannelIdentity
+    ? (senderChat.title || senderChat.username || "频道用户")
+    : buildSenderName(sender);
+  const senderId = isChannelIdentity ? senderChat.id : (sender?.id || 0);
+  const senderIsBot = isChannelIdentity ? 0 : (sender?.is_bot ? 1 : 0);
   const content = message.text || message.caption || "";
   const mediaType = detectMediaType(message);
   const hasMedia = mediaType !== null;
@@ -484,7 +490,7 @@ export async function saveGroupMessage(message: TelegramMessage, env: Env): Prom
     .bind(
       message.message_id,
       groupId,
-      sender?.id || 0,
+      senderId,
       senderName,
       senderIsBot,
       content,

@@ -139,6 +139,28 @@ export async function sendDocument(
   }
 }
 
+/** 获取频道/群组头像 file_id */
+export async function getChatAvatarFileId(
+  env: Env,
+  chatId: number,
+): Promise<string | null> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(
+      `${TELEGRAM_API_BASE}/bot${token}/getChat?chat_id=${chatId}`,
+    );
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { photo?: { small_file_id?: string } };
+    };
+    if (!data.ok || !data.result?.photo?.small_file_id) return null;
+    return data.result.photo.small_file_id;
+  } catch {
+    return null;
+  }
+}
+
 /** 获取用户头像照片列表，返回最小尺寸的 file_id */
 export async function getUserAvatarFileId(
   env: Env,
