@@ -236,6 +236,17 @@ export async function telegramApi(env: Env, method: string, payload: unknown): P
   }
 }
 
+const BOT_COMMANDS = [
+  { command: "start", description: "启动机器人" },
+  { command: "help", description: "显示帮助信息" },
+  { command: "status", description: "查看群组状态" },
+  { command: "q", description: "引用卡片" },
+];
+
+export async function registerBotCommands(env: Env): Promise<void> {
+  await telegramApi(env, "setMyCommands", { commands: BOT_COMMANDS });
+}
+
 async function sendPlainTextChunked(
   env: Env,
   chatId: number,

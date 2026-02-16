@@ -76,11 +76,13 @@ import {
 import { parseSchedule } from "../schedule";
 import { runLeaderboardForGroup } from "../leaderboard";
 import { runSummaryForGroup } from "../summary";
-import { answerCallbackQuery, editMessage, sendMessage } from "./api";
+import { answerCallbackQuery, editMessage, registerBotCommands, sendMessage } from "./api";
 import { handleSpoilerMessage } from "./spoiler";
 import { handleLinuxdoLink } from "./linuxdo";
 import { handleQuoteCommand } from "./quote";
 import { registerGroup, removeGroup, syncGroupsFromRegistry, updateRegistryFromConfig } from "../registry";
+
+let commandsRegistered = false;
 
 export async function handleTelegramWebhook(
   request: Request,
@@ -96,6 +98,14 @@ export async function handleTelegramWebhook(
   }
 
   await ensureSchema(env);
+
+  if (!commandsRegistered) {
+    commandsRegistered = true;
+    registerBotCommands(env).catch((e) => {
+      console.error("registerBotCommands failed", e);
+      commandsRegistered = false;
+    });
+  }
 
   const secret = (env.TG_WEBHOOK_SECRET || "").trim();
   if (secret) {
@@ -215,63 +225,8 @@ async function handleCommand(
     case "help":
       await sendHelpMessage(env, chatId, isOwner);
       return;
-    case "groups":
-      if (!isOwner) {
-        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-        return;
-      }
-      await sendGroupList(env, chatId);
-      return;
-    case "enable":
-      await handleEnable(command.args, chatId, env, isOwner);
-      return;
-    case "disable":
-      await handleDisable(command.args, chatId, env, isOwner);
-      return;
-    case "setschedule":
-      await handleSetSchedule(command.args, chatId, env, isOwner);
-      return;
     case "status":
       await handleStatus(chatId, env, isOwner);
-      return;
-    case "summary":
-      await handleSummary(command.args, chatId, env, isOwner);
-      return;
-    case "leaderboard":
-      await handleLeaderboard(command.args, chatId, env, isOwner);
-      return;
-    case "setleaderboard":
-      await handleSetLeaderboard(command.args, chatId, env, isOwner);
-      return;
-    case "setleaderboardwindow":
-      await handleSetLeaderboardWindow(command.args, chatId, env, isOwner);
-      return;
-    case "enableleaderboard":
-      await handleEnableLeaderboard(command.args, chatId, env, isOwner);
-      return;
-    case "disableleaderboard":
-      await handleDisableLeaderboard(command.args, chatId, env, isOwner);
-      return;
-    case "syncgroups":
-      if (!isOwner) {
-        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-        return;
-      }
-      await handleSyncGroups(chatId, env);
-      return;
-    case "set_linuxdo_token":
-      if (!isOwner) {
-        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-        return;
-      }
-      await handleSetLinuxdoToken(command.args, chatId, env);
-      return;
-    case "delete_linuxdo_token":
-      if (!isOwner) {
-        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-        return;
-      }
-      await handleDeleteLinuxdoToken(chatId, env);
       return;
     case "q":
       await handleQuoteCommand(message, env);
@@ -287,6 +242,8 @@ function buildHelpText(isOwner: boolean): string {
     "",
     "/start - 启动机器人",
     "/help - 显示帮助信息",
+    "/status - 查看群组状态",
+    "/q - 引用卡片",
     "",
   ];
 
@@ -298,28 +255,6 @@ function buildHelpText(isOwner: boolean): string {
   base.push("管理方式 (仅主人可用):");
   base.push('• 点击下方\u201c管理面板\u201d按钮');
   base.push('• 私聊发送\u201c管理面板/管理\u201d');
-  base.push("");
-  base.push("管理命令（可选）:");
-  base.push("/groups - 交互式群组管理");
-  base.push("/status - 查看群组状态");
-  base.push("/enable <群组ID> - 启用群组总结");
-  base.push("/disable <群组ID> - 禁用群组总结");
-  base.push("/setschedule <群组ID> <表达式> - 设置定时");
-  base.push("/summary <群组ID> - 手动触发总结");
-  base.push("/leaderboard <群组ID> - 手动发送排行榜");
-  base.push("/setleaderboard <群组ID> <表达式> - 设置排行榜周期");
-  base.push("/setleaderboardwindow <群组ID> <时长> - 设置排行榜统计窗口");
-  base.push("/enableleaderboard <群组ID> - 启用排行榜");
-  base.push("/disableleaderboard <群组ID> - 禁用排行榜");
-  base.push("/syncgroups - 从注册表同步群组");
-  base.push("");
-  base.push("Linux.do Token:");
-  base.push("/set_linuxdo_token <token> - 设置全局 Token");
-  base.push("/delete_linuxdo_token - 删除全局 Token");
-  base.push("");
-  base.push("定时表达式格式:");
-  base.push("Cron: 0 * * * *  (每小时)");
-  base.push("间隔: 30m / 2h / 1d");
   return base.join("\n");
 }
 
@@ -349,248 +284,6 @@ async function sendHelpMessage(env: Env, chatId: number, isOwner: boolean): Prom
       inline_keyboard: [[{ text: "管理面板", callback_data: CALLBACK_PANEL_OPEN }]],
     },
   });
-}
-
-async function handleEnable(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await insertGroupConfig(env, groupId, "", true, DEFAULT_SCHEDULE);
-  } else {
-    await updateGroupEnabled(env, groupId, true);
-  }
-
-  await sendMessage(env, chatId, `✅ 已启用群组 ${groupId} 的消息总结功能`);
-}
-
-async function handleDisable(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await sendMessage(env, chatId, `❌ 群组 ${groupId} 未配置`);
-    return;
-  }
-
-  await updateGroupEnabled(env, groupId, false);
-  await sendMessage(env, chatId, `✅ 已禁用群组 ${groupId} 的消息总结功能`);
-}
-
-async function handleSetSchedule(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  if (args.length < 2) {
-    await sendMessage(
-      env,
-      chatId,
-      "❌ 用法: /setschedule <群组ID> <表达式>\n\n支持格式:\n• Cron: 0 * * * *\n• 间隔: 30m / 2h / 1d",
-    );
-    return;
-  }
-
-  const groupId = parseInt(args[0], 10);
-  if (!Number.isFinite(groupId)) {
-    await sendMessage(env, chatId, "❌ 群组ID必须是数字");
-    return;
-  }
-
-  const schedule = args.slice(1).join(" ").trim();
-  if (!parseSchedule(schedule)) {
-    await sendMessage(env, chatId, "❌ 无效的定时表达式");
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await insertGroupConfig(env, groupId, "", false, schedule);
-  } else {
-    await updateGroupSchedule(env, groupId, schedule);
-  }
-
-  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的定时: ${schedule}`);
-}
-
-async function handleSetLeaderboard(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  if (args.length < 2) {
-    await sendMessage(
-      env,
-      chatId,
-      "❌ 用法: /setleaderboard <群组ID> <表达式>\n\n支持格式:\n• Cron: 0 * * * *\n• 间隔: 30m / 2h / 1d",
-    );
-    return;
-  }
-
-  const groupId = parseInt(args[0], 10);
-  if (!Number.isFinite(groupId)) {
-    await sendMessage(env, chatId, "❌ 群组ID必须是数字");
-    return;
-  }
-
-  const schedule = args.slice(1).join(" ").trim();
-  if (!parseSchedule(schedule)) {
-    await sendMessage(env, chatId, "❌ 无效的定时表达式");
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
-  }
-  await updateGroupLeaderboardSchedule(env, groupId, schedule);
-  const updated = await getGroupConfig(env, groupId);
-  if (updated) {
-    await updateRegistryFromConfig(env, updated);
-  }
-
-  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的排行榜定时: ${schedule}`);
-}
-
-async function handleSetLeaderboardWindow(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  if (args.length < 2) {
-    await sendMessage(
-      env,
-      chatId,
-      "❌ 用法: /setleaderboardwindow <群组ID> <时长>\n\n支持格式:\n• 30m / 2h / 1d",
-    );
-    return;
-  }
-
-  const groupId = parseInt(args[0], 10);
-  if (!Number.isFinite(groupId)) {
-    await sendMessage(env, chatId, "❌ 群组ID必须是数字");
-    return;
-  }
-
-  const windowText = args.slice(1).join(" ").trim();
-  if (!parseDuration(windowText)) {
-    await sendMessage(env, chatId, "❌ 无效的统计窗口格式");
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
-  }
-  await updateGroupLeaderboardWindow(env, groupId, windowText);
-  const updated = await getGroupConfig(env, groupId);
-  if (updated) {
-    await updateRegistryFromConfig(env, updated);
-  }
-
-  await sendMessage(env, chatId, `✅ 已设置群组 ${groupId} 的统计窗口: ${windowText}`);
-}
-
-async function handleEnableLeaderboard(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await insertGroupConfig(env, groupId, "", false, DEFAULT_SCHEDULE);
-  }
-  await updateGroupLeaderboardEnabled(env, groupId, true);
-  const updated = await getGroupConfig(env, groupId);
-  if (updated) {
-    await updateRegistryFromConfig(env, updated);
-  }
-  await sendMessage(env, chatId, `✅ 已启用群组 ${groupId} 的排行榜`);
-}
-
-async function handleDisableLeaderboard(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  const config = await getGroupConfig(env, groupId);
-  if (!config) {
-    await sendMessage(env, chatId, `❌ 群组 ${groupId} 未配置`);
-    return;
-  }
-
-  await updateGroupLeaderboardEnabled(env, groupId, false);
-  const updated = await getGroupConfig(env, groupId);
-  if (updated) {
-    await updateRegistryFromConfig(env, updated);
-  }
-  await sendMessage(env, chatId, `✅ 已禁用群组 ${groupId} 的排行榜`);
 }
 
 async function handleStatus(chatId: number, env: Env, isOwner: boolean): Promise<void> {
@@ -625,106 +318,6 @@ async function handleStatus(chatId: number, env: Env, isOwner: boolean): Promise
   await sendMessage(env, chatId, lines.join("\n"));
 }
 
-async function handleSummary(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  await sendMessage(env, chatId, `⏳ 正在为群组 ${groupId} 生成总结...`);
-  const result = await runSummaryForGroup(env, groupId);
-  if (result.success) {
-    await sendMessage(env, chatId, `✅ 群组 ${groupId} 的总结已完成`);
-  } else {
-    await sendMessage(env, chatId, `❌ 总结失败: ${result.error || "未知错误"}`);
-  }
-}
-
-async function handleLeaderboard(
-  args: string[],
-  chatId: number,
-  env: Env,
-  isOwner: boolean,
-): Promise<void> {
-  if (!isOwner) {
-    await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
-    return;
-  }
-
-  const groupId = parseGroupIdArg(args, env, chatId);
-  if (!groupId) {
-    return;
-  }
-
-  await sendMessage(env, chatId, `⏳ 正在统计群组 ${groupId} 的排行榜...`);
-  const result = await runLeaderboardForGroup(env, groupId);
-  if (result.success) {
-    if (!result.content) {
-      await sendMessage(env, chatId, `ℹ️ 群组 ${groupId} 暂无可统计消息`);
-      return;
-    }
-    await sendMessage(env, chatId, `✅ 群组 ${groupId} 的排行榜已发送`);
-  } else {
-    await sendMessage(env, chatId, `❌ 排行榜失败: ${result.error || "未知错误"}`);
-  }
-}
-
-async function handleSetLinuxdoToken(
-  args: string[],
-  chatId: number,
-  env: Env,
-): Promise<void> {
-  if (args.length < 1) {
-    const existingToken = await getGlobalLinuxdoToken(env);
-    const statusText = existingToken
-      ? "✅ 已设置全局 Linux.do Token"
-      : "⭕ 尚未设置全局 Linux.do Token";
-    await sendMessage(
-      env,
-      chatId,
-      `${statusText}\n\n` +
-      "用法: /set_linuxdo_token <token>\n\n" +
-      "获取方式:\n" +
-      "1. 登录 linux.do\n" +
-      "2. 按 F12 打开开发者工具\n" +
-      "3. 切换到 Application 标签\n" +
-      "4. 在 Cookies → linux.do 中找到 _t\n" +
-      "5. 复制 _t 的值",
-    );
-    return;
-  }
-
-  const token = args[0].trim();
-  if (!token) {
-    await sendMessage(env, chatId, "❌ Token 不能为空");
-    return;
-  }
-
-  await setGlobalLinuxdoToken(env, token);
-  await sendMessage(env, chatId, "✅ 已保存全局 Linux.do Token\n\n所有群组解析 Linux.do 链接时将使用此 Token。");
-}
-
-async function handleDeleteLinuxdoToken(
-  chatId: number,
-  env: Env,
-): Promise<void> {
-  const deleted = await deleteGlobalLinuxdoToken(env);
-  if (deleted) {
-    await sendMessage(env, chatId, "✅ 已删除全局 Linux.do Token");
-  } else {
-    await sendMessage(env, chatId, "ℹ️ 尚未设置全局 Linux.do Token");
-  }
-}
 
 async function handleCallbackQuery(
   callbackQuery: TelegramCallbackQuery,
