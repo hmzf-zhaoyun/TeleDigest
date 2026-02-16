@@ -53,17 +53,17 @@ import {
 } from "../utils";
 import {
   clearAdminAction,
-  deleteUserLinuxdoToken,
+  deleteGlobalLinuxdoToken,
   ensureSchema,
   getAdminAction,
   getAllGroups,
+  getGlobalLinuxdoToken,
   getGroupConfig,
-  getUserLinuxdoToken,
   insertGroupConfig,
   openKvSyncWindow,
   saveGroupMessage,
   setAdminAction,
-  setUserLinuxdoToken,
+  setGlobalLinuxdoToken,
   updateGroupEnabled,
   updateGroupLeaderboardEnabled,
   updateGroupLeaderboardSchedule,
@@ -260,10 +260,18 @@ async function handleCommand(
       await handleSyncGroups(chatId, env);
       return;
     case "set_linuxdo_token":
-      await handleSetLinuxdoToken(command.args, chatId, userId, env);
+      if (!isOwner) {
+        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+        return;
+      }
+      await handleSetLinuxdoToken(command.args, chatId, env);
       return;
     case "delete_linuxdo_token":
-      await handleDeleteLinuxdoToken(chatId, userId, env);
+      if (!isOwner) {
+        await sendMessage(env, chatId, "⛔ 您没有权限执行此命令");
+        return;
+      }
+      await handleDeleteLinuxdoToken(chatId, env);
       return;
     case "q":
       await handleQuoteCommand(message, env);
@@ -280,10 +288,6 @@ function buildHelpText(isOwner: boolean): string {
     "/start - 启动机器人",
     "/help - 显示帮助信息",
     "",
-    "Linux.do 功能:",
-    "/set_linuxdo_token <token> - 设置你的 Linux.do Token",
-    "/delete_linuxdo_token - 删除你的 Token",
-    "",
   ];
 
   if (!isOwner) {
@@ -292,8 +296,8 @@ function buildHelpText(isOwner: boolean): string {
   }
 
   base.push("管理方式 (仅主人可用):");
-  base.push("• 点击下方“管理面板”按钮");
-  base.push("• 私聊发送“管理面板/管理”");
+  base.push('• 点击下方\u201c管理面板\u201d按钮');
+  base.push('• 私聊发送\u201c管理面板/管理\u201d');
   base.push("");
   base.push("管理命令（可选）:");
   base.push("/groups - 交互式群组管理");
@@ -308,6 +312,10 @@ function buildHelpText(isOwner: boolean): string {
   base.push("/enableleaderboard <群组ID> - 启用排行榜");
   base.push("/disableleaderboard <群组ID> - 禁用排行榜");
   base.push("/syncgroups - 从注册表同步群组");
+  base.push("");
+  base.push("Linux.do Token:");
+  base.push("/set_linuxdo_token <token> - 设置全局 Token");
+  base.push("/delete_linuxdo_token - 删除全局 Token");
   base.push("");
   base.push("定时表达式格式:");
   base.push("Cron: 0 * * * *  (每小时)");
@@ -674,19 +682,13 @@ async function handleLeaderboard(
 async function handleSetLinuxdoToken(
   args: string[],
   chatId: number,
-  userId: number | undefined,
   env: Env,
 ): Promise<void> {
-  if (!userId) {
-    await sendMessage(env, chatId, "❌ 无法识别用户");
-    return;
-  }
-
   if (args.length < 1) {
-    const existingToken = await getUserLinuxdoToken(env, userId);
+    const existingToken = await getGlobalLinuxdoToken(env);
     const statusText = existingToken
-      ? "✅ 你已设置 Linux.do Token"
-      : "⭕ 你尚未设置 Linux.do Token";
+      ? "✅ 已设置全局 Linux.do Token"
+      : "⭕ 尚未设置全局 Linux.do Token";
     await sendMessage(
       env,
       chatId,
@@ -708,25 +710,19 @@ async function handleSetLinuxdoToken(
     return;
   }
 
-  await setUserLinuxdoToken(env, userId, token);
-  await sendMessage(env, chatId, "✅ 已保存你的 Linux.do Token\n\n发送 Linux.do 链接时将使用你的 Token 获取内容。");
+  await setGlobalLinuxdoToken(env, token);
+  await sendMessage(env, chatId, "✅ 已保存全局 Linux.do Token\n\n所有群组解析 Linux.do 链接时将使用此 Token。");
 }
 
 async function handleDeleteLinuxdoToken(
   chatId: number,
-  userId: number | undefined,
   env: Env,
 ): Promise<void> {
-  if (!userId) {
-    await sendMessage(env, chatId, "❌ 无法识别用户");
-    return;
-  }
-
-  const deleted = await deleteUserLinuxdoToken(env, userId);
+  const deleted = await deleteGlobalLinuxdoToken(env);
   if (deleted) {
-    await sendMessage(env, chatId, "✅ 已删除你的 Linux.do Token");
+    await sendMessage(env, chatId, "✅ 已删除全局 Linux.do Token");
   } else {
-    await sendMessage(env, chatId, "ℹ️ 你尚未设置 Linux.do Token");
+    await sendMessage(env, chatId, "ℹ️ 尚未设置全局 Linux.do Token");
   }
 }
 
@@ -952,7 +948,7 @@ async function processCallbackData(
 
   if (namespace === "ldt") {
     if (action === "menu") {
-      await sendLinuxdoTokenMenu(env, chatId, userId, messageId);
+      await sendLinuxdoTokenMenu(env, chatId, messageId);
       return true;
     }
     if (action === "set") {
@@ -960,7 +956,7 @@ async function processCallbackData(
       await sendMessage(
         env,
         chatId,
-        "✍️ 请输入你的 Linux.do Token（_t cookie 值）。\n发送 \"取消\" 可退出。\n\n" +
+        "✍️ 请输入全局 Linux.do Token（_t cookie 值）。\n发送 \"取消\" 可退出。\n\n" +
         "获取方式:\n" +
         "1. 登录 linux.do\n" +
         "2. 按 F12 打开开发者工具\n" +
@@ -971,8 +967,8 @@ async function processCallbackData(
       return true;
     }
     if (action === "delete") {
-      await deleteUserLinuxdoToken(env, userId);
-      await sendLinuxdoTokenMenu(env, chatId, userId, messageId);
+      await deleteGlobalLinuxdoToken(env);
+      await sendLinuxdoTokenMenu(env, chatId, messageId);
       return true;
     }
     return false;
@@ -1039,9 +1035,9 @@ async function handlePendingAdminAction(
     return true;
   }
   if (pending.action === "set_linuxdo_token") {
-    await setUserLinuxdoToken(env, pending.user_id, content);
+    await setGlobalLinuxdoToken(env, content);
     await clearAdminAction(env, pending.user_id);
-    await sendMessage(env, message.chat.id, "✅ 已保存你的 Linux.do Token");
+    await sendMessage(env, message.chat.id, "✅ 已保存全局 Linux.do Token");
     return true;
   }
   return false;
@@ -1074,7 +1070,7 @@ async function sendGroupList(
     { text: "🔁 同步群组", callback_data: CALLBACK_PANEL_SYNC },
   ]);
   keyboard.push([
-    { text: "🔗 我的 Linuxdo Token", callback_data: CALLBACK_LINUXDO_TOKEN_MENU },
+    { text: "🔗 Linuxdo Token 管理", callback_data: CALLBACK_LINUXDO_TOKEN_MENU },
   ]);
   keyboard.push([
     { text: "🔄 刷新", callback_data: CALLBACK_PANEL_LIST },
@@ -1475,18 +1471,17 @@ async function toggleLinuxdoEnabled(
 async function sendLinuxdoTokenMenu(
   env: Env,
   chatId: number,
-  userId: number,
   messageId: number | null = null,
 ): Promise<void> {
-  const existingToken = await getUserLinuxdoToken(env, userId);
+  const existingToken = await getGlobalLinuxdoToken(env);
   const hasToken = !!existingToken;
 
   const lines = [
-    "🔗 我的 Linux.do Token",
+    "🔗 全局 Linux.do Token",
     "",
     `状态: ${hasToken ? "✅ 已设置" : "⭕ 未设置"}`,
     "",
-    "设置 Token 后，发送 Linux.do 链接时将使用你的 Token 获取内容。",
+    "设置 Token 后，所有群组解析 Linux.do 链接时将使用此 Token 获取内容。",
   ];
 
   const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];

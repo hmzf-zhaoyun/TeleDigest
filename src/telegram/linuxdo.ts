@@ -1,7 +1,7 @@
 import type { Env, TelegramMessage } from "../types";
 import { sendMessage } from "./api";
 import { escapeHtml } from "../utils";
-import { getGroupConfig, getUserLinuxdoToken, setUserLinuxdoToken } from "../db";
+import { getGroupConfig, getGlobalLinuxdoToken, setGlobalLinuxdoToken } from "../db";
 
 const LINUXDO_URL_PATTERN = /https?:\/\/linux\.do\/t\/topic\/(\d+)(?:\/(\d+))?/i;
 
@@ -63,20 +63,20 @@ function extractNewToken(response: Response): string | null {
   return null;
 }
 
-export async function fetchLinuxdoPost(jsonUrl: string, env: Env, userToken?: string | null, userId?: number | null): Promise<LinuxdoPost | null> {
-  const rawCookie = userToken || env.LINUXDO_COOKIE || null;
+export async function fetchLinuxdoPost(jsonUrl: string, env: Env): Promise<LinuxdoPost | null> {
+  const rawCookie = await getGlobalLinuxdoToken(env);
   const cookie = rawCookie ? buildCookieString(rawCookie) : null;
-  console.log(`[linuxdo] url=${jsonUrl} cookieSource=${userToken ? "user" : env.LINUXDO_COOKIE ? "env" : "none"} cookieLen=${cookie?.length ?? 0} hasScrape=${!!env.SCRAPE_DO_TOKEN}`);
+  console.log(`[linuxdo] url=${jsonUrl} cookieSource=${rawCookie ? "db" : "none"} cookieLen=${cookie?.length ?? 0} hasScrape=${!!env.SCRAPE_DO_TOKEN}`);
 
   // 策略1: scrape.do 代理 + cookie（绕 CF 且带认证，geoCode 锁定新加坡减少 IP 漂移）
   if (env.SCRAPE_DO_TOKEN) {
     const result = await fetchViaScrapeProxy(jsonUrl, env.SCRAPE_DO_TOKEN, cookie);
     console.log(`[linuxdo] scrape.do result=${!!result.post}`);
     // Auto-renew: save new token back to D1
-    if (result.newCookie && userId && userToken) {
-      console.log(`[linuxdo] auto-renewing token for user ${userId}`);
+    if (result.newCookie && rawCookie) {
+      console.log(`[linuxdo] auto-renewing global token`);
       try {
-        await setUserLinuxdoToken(env, userId, result.newCookie);
+        await setGlobalLinuxdoToken(env, result.newCookie);
       } catch (e) {
         console.error(`[linuxdo] failed to save renewed token:`, e);
       }
@@ -223,11 +223,7 @@ export async function handleLinuxdoLink(message: TelegramMessage, env: Env): Pro
   const jsonUrl = extractLinuxdoUrl(text);
   if (!jsonUrl) return false;
 
-  // 获取发送者的 token（如果有）
-  const userId = message.from?.id;
-  const userToken = userId ? await getUserLinuxdoToken(env, userId) : null;
-
-  const post = await fetchLinuxdoPost(jsonUrl, env, userToken, userId);
+  const post = await fetchLinuxdoPost(jsonUrl, env);
   if (!post) {
     await sendMessage(env, message.chat.id, "❌ 无法获取 Linux.do 帖子内容");
     return true;

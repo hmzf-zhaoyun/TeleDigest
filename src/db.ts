@@ -18,12 +18,6 @@ let kvWindowCheckedAt = 0;
 const KV_WINDOW_CACHE_MS = 5_000;
 const KV_SYNC_WINDOW_KEY = "kv_sync_window_until";
 
-export type UserLinuxdoTokenRow = {
-  user_id: number;
-  token: string;
-  created_at: string;
-  updated_at: string;
-};
 
 export type LeaderboardRow = {
   sender_id: number;
@@ -53,14 +47,6 @@ export async function ensureSchema(env: Env): Promise<void> {
       )`
     ).run();
 
-    await env.DB.prepare(
-      `CREATE TABLE IF NOT EXISTS user_linuxdo_tokens (
-        user_id INTEGER PRIMARY KEY,
-        token TEXT NOT NULL,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )`
-    ).run();
 
     const info = await env.DB.prepare("PRAGMA table_info(group_configs)").all<{
       name: string;
@@ -116,6 +102,29 @@ export async function ensureSchema(env: Env): Promise<void> {
     await env.DB.prepare(
       "CREATE INDEX IF NOT EXISTS idx_messages_group_date ON group_messages(group_id, message_date)"
     ).run();
+
+    // 一次性迁移: 将 user_linuxdo_tokens 中的 token 迁移到 app_settings 全局 token
+    try {
+      const oldToken = await env.DB.prepare(
+        "SELECT token FROM user_linuxdo_tokens LIMIT 1"
+      ).first<{ token: string }>();
+      if (oldToken?.token) {
+        const existing = await env.DB.prepare(
+          "SELECT value FROM app_settings WHERE key = 'linuxdo_token'"
+        ).first<{ value: string }>();
+        if (!existing) {
+          const now = new Date().toISOString();
+          await env.DB.prepare(
+            `INSERT INTO app_settings (key, value, updated_at) VALUES ('linuxdo_token', ?, ?)`
+          ).bind(oldToken.token, now).run();
+          console.log("[migration] migrated user linuxdo token to global");
+        }
+        await env.DB.prepare("DROP TABLE IF EXISTS user_linuxdo_tokens").run();
+        console.log("[migration] dropped user_linuxdo_tokens table");
+      }
+    } catch {
+      // 表不存在或已迁移，忽略
+    }
   } catch (error) {
     schemaReady = false;
     console.error("ensureSchema failed", error);
@@ -534,33 +543,35 @@ function detectMediaType(message: TelegramMessage): string | null {
   return null;
 }
 
-export async function getUserLinuxdoToken(env: Env, userId: number): Promise<string | null> {
+const LINUXDO_TOKEN_KEY = "linuxdo_token";
+
+export async function getGlobalLinuxdoToken(env: Env): Promise<string | null> {
   const row = await env.DB.prepare(
-    "SELECT token FROM user_linuxdo_tokens WHERE user_id = ?"
+    "SELECT value FROM app_settings WHERE key = ?"
   )
-    .bind(userId)
-    .first<{ token: string }>();
-  return row?.token || null;
+    .bind(LINUXDO_TOKEN_KEY)
+    .first<{ value: string }>();
+  return row?.value || null;
 }
 
-export async function setUserLinuxdoToken(env: Env, userId: number, token: string): Promise<void> {
+export async function setGlobalLinuxdoToken(env: Env, token: string): Promise<void> {
   const now = new Date().toISOString();
   await env.DB.prepare(
-    `INSERT INTO user_linuxdo_tokens (user_id, token, created_at, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET
-       token = excluded.token,
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
        updated_at = excluded.updated_at`
   )
-    .bind(userId, token, now, now)
+    .bind(LINUXDO_TOKEN_KEY, token, now)
     .run();
 }
 
-export async function deleteUserLinuxdoToken(env: Env, userId: number): Promise<boolean> {
+export async function deleteGlobalLinuxdoToken(env: Env): Promise<boolean> {
   const result = await env.DB.prepare(
-    "DELETE FROM user_linuxdo_tokens WHERE user_id = ?"
+    "DELETE FROM app_settings WHERE key = ?"
   )
-    .bind(userId)
+    .bind(LINUXDO_TOKEN_KEY)
     .run();
   return (result.meta?.changes ?? 0) > 0;
 }

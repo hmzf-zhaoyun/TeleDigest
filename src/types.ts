@@ -11,7 +11,6 @@ export interface Env {
   LLM_MAX_TOKENS?: string;
   LLM_TEMPERATURE?: string;
   SCHEDULE_TZ_OFFSET_MINUTES?: string;
-  LINUXDO_COOKIE?: string;
   SCRAPE_DO_TOKEN?: string;
 }
 
