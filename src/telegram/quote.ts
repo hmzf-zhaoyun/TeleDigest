@@ -218,7 +218,8 @@ function buildDisplayName(user?: TelegramUser): string {
 }
 
 function formatTime(timestamp: number): string {
-  const d = new Date(timestamp * 1000);
+  // UTC+8 上海时间
+  const d = new Date(timestamp * 1000 + 8 * 60 * 60 * 1000);
   const h = String(d.getUTCHours()).padStart(2, "0");
   const m = String(d.getUTCMinutes()).padStart(2, "0");
   return `${h}:${m}`;

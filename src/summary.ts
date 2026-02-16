@@ -60,8 +60,10 @@ function formatTime(iso: string): string {
   if (Number.isNaN(date.getTime())) {
     return "--:--";
   }
-  const hh = String(date.getUTCHours()).padStart(2, "0");
-  const mm = String(date.getUTCMinutes()).padStart(2, "0");
+  // UTC+8 上海时间
+  const shanghai = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const hh = String(shanghai.getUTCHours()).padStart(2, "0");
+  const mm = String(shanghai.getUTCMinutes()).padStart(2, "0");
   return `${hh}:${mm}`;
 }
 
@@ -225,7 +227,7 @@ async function callOpenAIResponses(
     temperature,
   };
 
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -267,7 +269,7 @@ async function callOpenAI(
     temperature,
   };
 
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -314,7 +316,7 @@ async function callCustom(
     temperature,
   };
 
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -354,7 +356,7 @@ async function callClaude(
     messages: [{ role: "user", content: prompt }],
   };
 
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       "x-api-key": apiKey,
@@ -398,7 +400,7 @@ async function callGemini(
     },
   };
 
-  const response = await fetchWithTimeout(url, {
+  const response = await fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -431,4 +433,33 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+const MAX_RETRIES = 2;
+const RETRY_DELAY_MS = 3000;
+
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number = LLM_TIMEOUT_MS,
+): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await fetchWithTimeout(url, options, timeoutMs);
+      if (response.ok || response.status < 500) {
+        return response;
+      }
+      // 5xx 错误重试
+      lastError = new Error(`HTTP ${response.status}`);
+      console.error(`[summary] attempt ${attempt + 1} failed: HTTP ${response.status}`);
+    } catch (e) {
+      lastError = e instanceof Error ? e : new Error(String(e));
+      console.error(`[summary] attempt ${attempt + 1} failed: ${lastError.message}`);
+    }
+    if (attempt < MAX_RETRIES) {
+      await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+    }
+  }
+  throw lastError || new Error("LLM 调用失败");
 }
