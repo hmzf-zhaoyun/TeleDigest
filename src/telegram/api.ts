@@ -242,6 +242,23 @@ export async function sendSticker(
   }
 }
 
+/** Send a group of photos as an album (max 10) via URL */
+export async function sendMediaGroup(
+  env: Env,
+  chatId: number,
+  imageUrls: string[],
+): Promise<void> {
+  if (imageUrls.length === 0) return;
+  const media = imageUrls.slice(0, 10).map((url) => ({
+    type: "photo" as const,
+    media: url,
+  }));
+  await telegramApi(env, "sendMediaGroup", {
+    chat_id: chatId,
+    media,
+  });
+}
+
 export async function telegramApi(env: Env, method: string, payload: unknown): Promise<void> {
   const token = env.TG_BOT_TOKEN;
   if (!token) {

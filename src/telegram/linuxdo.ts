@@ -1,5 +1,5 @@
 import type { Env, TelegramMessage } from "../types";
-import { sendMessage } from "./api";
+import { sendMessage, sendMediaGroup } from "./api";
 import { escapeHtml } from "../utils";
 import { getGroupConfig, getGlobalLinuxdoToken, setGlobalLinuxdoToken } from "../db";
 
@@ -9,6 +9,7 @@ export interface LinuxdoPost {
   title: string;
   author: string;
   content: string;
+  images: string[];
 }
 
 interface LinuxdoApiResponse {
@@ -152,11 +153,35 @@ function parseLinuxdoResponse(data: LinuxdoApiResponse): LinuxdoPost | null {
 
   const author = firstPost.name || firstPost.username || "未知";
   const rawHtml = firstPost.cooked || "";
+  const images = extractImages(rawHtml);
   const content = stripHtml(rawHtml);
 
   if (!title && !content) return null;
 
-  return { title, author, content };
+  return { title, author, content, images };
+}
+
+/** Extract image URLs from Discourse cooked HTML.
+ *  Only use img src (not lightbox href which may lack extension).
+ *  Filter out emoji, avatar, and extensionless URLs. Max 10 (Telegram limit). */
+function extractImages(html: string): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const imgRe = /<img[^>]+src="([^"]+)"[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = imgRe.exec(html)) !== null) {
+    const url = m[1];
+    if (seen.has(url)) continue;
+    // Skip emoji and avatar images
+    if (/\/images\/emoji\//i.test(url)) continue;
+    if (/\/user_avatar\//i.test(url)) continue;
+    if (/\/letter_avatar/i.test(url)) continue;
+    // Must have image extension for Telegram to recognize
+    if (!/\.(jpe?g|png|gif|webp)/i.test(url)) continue;
+    seen.add(url);
+    urls.push(url);
+  }
+  return urls.slice(0, 10);
 }
 
 function stripHtml(html: string): string {
@@ -234,6 +259,18 @@ export async function handleLinuxdoLink(message: TelegramMessage, env: Env): Pro
     parse_mode: "HTML",
     disable_web_page_preview: true,
   });
+
+  // Send images as album if available
+  if (post.images.length > 0) {
+    console.log(`[linuxdo] sending ${post.images.length} images as album:`, post.images);
+    try {
+      await sendMediaGroup(env, message.chat.id, post.images);
+    } catch (e) {
+      console.error("[linuxdo] sendMediaGroup failed:", e);
+    }
+  } else {
+    console.log("[linuxdo] no images extracted from post");
+  }
 
   return true;
 }
