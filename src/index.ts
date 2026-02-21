@@ -1,5 +1,5 @@
 import type { Env } from "./types";
-import { ensureSchema } from "./db";
+import { ensureSchema, purgeOldMessages } from "./db";
 import { handleTelegramWebhook } from "./telegram/handlers";
 import { runScheduledSummaries } from "./schedule";
 import { runScheduledLeaderboards } from "./leaderboard";
@@ -20,6 +20,6 @@ export default {
     if (env.DB) {
       await ensureSchema(env);
     }
-    await Promise.allSettled([runScheduledSummaries(env), runScheduledLeaderboards(env)]);
+    await Promise.allSettled([runScheduledSummaries(env), runScheduledLeaderboards(env), purgeOldMessages(env)]);
   },
 };

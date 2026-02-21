@@ -411,17 +411,41 @@ export async function getUnsummarizedMessages(
   env: Env,
   groupId: number,
   limit: number,
+  since?: string,
 ): Promise<GroupMessageRow[]> {
-  const results = await env.DB.prepare(
-    `SELECT message_id, group_id, sender_id, sender_name, content, message_date, has_media, media_type, is_summarized
+  const query = since
+    ? `SELECT message_id, group_id, sender_id, sender_name, content, message_date, has_media, media_type, is_summarized
+     FROM group_messages
+     WHERE group_id = ? AND is_summarized = 0 AND message_date >= ?
+     ORDER BY message_date ASC
+     LIMIT ?`
+    : `SELECT message_id, group_id, sender_id, sender_name, content, message_date, has_media, media_type, is_summarized
      FROM group_messages
      WHERE group_id = ? AND is_summarized = 0
      ORDER BY message_date ASC
-     LIMIT ?`
-  )
-    .bind(groupId, limit)
-    .all<GroupMessageRow>();
+     LIMIT ?`;
+  const stmt = since
+    ? env.DB.prepare(query).bind(groupId, since, limit)
+    : env.DB.prepare(query).bind(groupId, limit);
+  const results = await stmt.all<GroupMessageRow>();
   return results.results || [];
+}
+
+/**
+ * Mark all unsummarized messages older than `before` as summarized (skip them).
+ */
+export async function markOldMessagesSkipped(
+  env: Env,
+  groupId: number,
+  before: string,
+): Promise<number> {
+  const result = await env.DB.prepare(
+    `UPDATE group_messages SET is_summarized = 1
+     WHERE group_id = ? AND is_summarized = 0 AND message_date < ?`
+  )
+    .bind(groupId, before)
+    .run();
+  return result.meta?.changes ?? 0;
 }
 
 export async function getMessageLeaderboard(
@@ -580,4 +604,27 @@ export async function deleteGlobalLinuxdoToken(env: Env): Promise<boolean> {
     .bind(LINUXDO_TOKEN_KEY)
     .run();
   return (result.meta?.changes ?? 0) > 0;
+}
+
+/**
+ * Delete summarized messages older than today (UTC+8).
+ * Keeps all unsummarized messages and today's summarized messages.
+ */
+export async function purgeOldMessages(env: Env): Promise<number> {
+  // UTC+8 today start: subtract 8 hours from current UTC to get local midnight
+  const now = new Date();
+  const todayStart = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const cutoff = new Date(todayStart.getTime() - 8 * 60 * 60 * 1000).toISOString();
+
+  const result = await env.DB.prepare(
+    `DELETE FROM group_messages WHERE is_summarized = 1 AND message_date < ?`
+  )
+    .bind(cutoff)
+    .run();
+  const deleted = result.meta?.changes ?? 0;
+  if (deleted > 0) {
+    console.log(`[purge] deleted ${deleted} old summarized messages (before ${cutoff})`);
+  }
+  return deleted;
 }

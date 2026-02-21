@@ -10,9 +10,11 @@ import {
   getGroupConfig,
   getUnsummarizedMessages,
   markMessagesSummarized,
+  markOldMessagesSkipped,
   updateGroupAfterSummary,
 } from "./db";
 import { sendSummary } from "./telegram/api";
+import { parseSchedule } from "./schedule";
 
 export async function runSummaryForGroup(env: Env, groupId: number): Promise<SummaryResult> {
   const config = await getGroupConfig(env, groupId);
@@ -20,25 +22,56 @@ export async function runSummaryForGroup(env: Env, groupId: number): Promise<Sum
     return { success: false, content: "", error: "群组配置不存在" };
   }
 
-  const messages = await getUnsummarizedMessages(env, groupId, MAX_MESSAGES_PER_SUMMARY);
+  // Calculate time window based on schedule config
+  const windowMs = getScheduleWindowMs(config.schedule);
+  let since: string | undefined;
+  if (windowMs > 0) {
+    const sinceDate = new Date(Date.now() - windowMs);
+    since = sinceDate.toISOString();
+    // Mark older unsummarized messages as skipped
+    const skipped = await markOldMessagesSkipped(env, groupId, since);
+    if (skipped > 0) {
+      console.log(`[summary] skipped ${skipped} old messages for group ${groupId} (before ${since})`);
+    }
+  }
+
+  const messages = await getUnsummarizedMessages(env, groupId, MAX_MESSAGES_PER_SUMMARY, since);
   if (!messages.length) {
     return { success: true, content: "" };
   }
 
   const formatted = formatMessages(messages);
   const summary = await summarizeMessages(formatted, env);
+  const maxMessageId = Math.max(...messages.map((msg) => msg.message_id));
+
   if (!summary.success) {
+    // LLM failed (e.g. content filter) — mark these messages as summarized
+    // so they don't block future summaries
+    await markMessagesSummarized(env, groupId, maxMessageId);
+    console.warn(`[summary] failed for group ${groupId}, marked ${messages.length} messages as summarized to avoid retry loop: ${summary.error}`);
     return summary;
   }
 
   const targetChat = config.target_chat_id ?? groupId;
   await sendSummary(env, targetChat, config.group_name || String(groupId), summary.content);
 
-  const maxMessageId = Math.max(...messages.map((msg) => msg.message_id));
   await markMessagesSummarized(env, groupId, maxMessageId);
   await updateGroupAfterSummary(env, groupId, maxMessageId);
 
   return summary;
+}
+
+/**
+ * Get the time window in ms from schedule string.
+ * For interval schedules (30m, 1h, 2h), use the interval as window.
+ * For cron schedules, no window limit (rely on fail-and-skip to avoid loops).
+ */
+function getScheduleWindowMs(schedule: string | undefined): number {
+  if (!schedule) return 0;
+  const parsed = parseSchedule(schedule);
+  if (!parsed) return 0;
+  if (parsed.kind === "interval") return parsed.ms;
+  return 0;
 }
 
 function formatMessages(messages: GroupMessageRow[]): string[] {
@@ -316,13 +349,16 @@ async function callCustom(
     temperature,
   };
 
+  const body = JSON.stringify(payload);
+  console.log(`[callCustom] request body size: ${body.length} bytes, prompt length: ${prompt.length} chars`);
+
   const response = await fetchWithRetry(url, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload),
+    body,
   });
 
   if (!response.ok) {
@@ -330,11 +366,25 @@ async function callCustom(
     return { success: false, content: "", error: `自定义 API 错误: ${text}` };
   }
 
-  const data = (await response.json()) as {
-    choices?: { message?: { content?: string } }[];
-  };
-  const content = (data.choices?.[0]?.message?.content || "").trim();
+  const rawText = await response.text();
+  console.log(`[callCustom] response size: ${rawText.length} bytes`);
+  let data: { choices?: { message?: { content?: string; reasoning_content?: string } }[] };
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    console.error("[callCustom] JSON parse failed, raw:", rawText.slice(0, 500));
+    return { success: false, content: "", error: `自定义 LLM 返回非 JSON: ${rawText.slice(0, 200)}` };
+  }
+
+  const msg = data.choices?.[0]?.message;
+  const content = (msg?.content || msg?.reasoning_content || "").trim();
   if (!content) {
+    const hasEmptyChoices = Array.isArray(data.choices) && data.choices.length === 0;
+    if (hasEmptyChoices) {
+      console.warn("[callCustom] API returned empty choices (possible content filter)");
+      return { success: false, content: "", error: "LLM 返回空内容，可能触发了内容审查机制" };
+    }
+    console.error("[callCustom] empty content, raw:", rawText.slice(0, 300));
     return { success: false, content: "", error: "自定义 LLM 返回空内容" };
   }
   return { success: true, content };
