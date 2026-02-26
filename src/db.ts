@@ -574,6 +574,8 @@ function detectMediaType(message: TelegramMessage): string | null {
 }
 
 const LINUXDO_TOKEN_KEY = "linuxdo_token";
+const SCRAPE_GEO_KEY = "scrape_geo_code";
+const SCRAPE_SUPER_KEY = "scrape_super";
 
 export async function getGlobalLinuxdoToken(env: Env): Promise<string | null> {
   const row = await env.DB.prepare(
@@ -604,6 +606,59 @@ export async function deleteGlobalLinuxdoToken(env: Env): Promise<boolean> {
     .bind(LINUXDO_TOKEN_KEY)
     .run();
   return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function getScrapeGeoCode(env: Env): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "SELECT value FROM app_settings WHERE key = ?"
+  )
+    .bind(SCRAPE_GEO_KEY)
+    .first<{ value: string }>();
+  return row?.value || null;
+}
+
+export async function setScrapeGeoCode(env: Env, geoCode: string): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`
+  )
+    .bind(SCRAPE_GEO_KEY, geoCode, now)
+    .run();
+}
+
+export async function deleteScrapeGeoCode(env: Env): Promise<boolean> {
+  const result = await env.DB.prepare(
+    "DELETE FROM app_settings WHERE key = ?"
+  )
+    .bind(SCRAPE_GEO_KEY)
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
+export async function getScrapeSuper(env: Env): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT value FROM app_settings WHERE key = ?"
+  )
+    .bind(SCRAPE_SUPER_KEY)
+    .first<{ value: string }>();
+  return row?.value === "1";
+}
+
+export async function setScrapeSuper(env: Env, enabled: boolean): Promise<void> {
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`
+  )
+    .bind(SCRAPE_SUPER_KEY, enabled ? "1" : "0", now)
+    .run();
 }
 
 /**

@@ -1,7 +1,7 @@
 import type { Env, TelegramMessage } from "../types";
 import { sendMessage, sendMediaGroup } from "./api";
 import { escapeHtml } from "../utils";
-import { getGroupConfig, getGlobalLinuxdoToken, setGlobalLinuxdoToken } from "../db";
+import { getGroupConfig, getGlobalLinuxdoToken, setGlobalLinuxdoToken, getScrapeGeoCode, getScrapeSuper } from "../db";
 
 const LINUXDO_URL_PATTERN = /https?:\/\/linux\.do\/t\/topic\/(\d+)(?:\/(\d+))?/i;
 
@@ -69,9 +69,11 @@ export async function fetchLinuxdoPost(jsonUrl: string, env: Env): Promise<Linux
   const cookie = rawCookie ? buildCookieString(rawCookie) : null;
   console.log(`[linuxdo] url=${jsonUrl} cookieSource=${rawCookie ? "db" : "none"} cookieLen=${cookie?.length ?? 0} hasScrape=${!!env.SCRAPE_DO_TOKEN}`);
 
-  // 策略1: scrape.do 代理 + cookie（绕 CF 且带认证，geoCode 锁定新加坡减少 IP 漂移）
+  // 策略1: scrape.do 代理 + cookie（绕 CF 且带认证）
   if (env.SCRAPE_DO_TOKEN) {
-    const result = await fetchViaScrapeProxy(jsonUrl, env.SCRAPE_DO_TOKEN, cookie);
+    const geoCode = await getScrapeGeoCode(env);
+    const superMode = await getScrapeSuper(env);
+    const result = await fetchViaScrapeProxy(jsonUrl, env.SCRAPE_DO_TOKEN, cookie, geoCode, superMode);
     console.log(`[linuxdo] scrape.do result=${!!result.post}`);
     // Auto-renew: save new token back to D1
     if (result.newCookie && rawCookie) {
@@ -95,9 +97,15 @@ export async function fetchLinuxdoPost(jsonUrl: string, env: Env): Promise<Linux
   return null;
 }
 
-async function fetchViaScrapeProxy(jsonUrl: string, token: string, cookie?: string | null): Promise<FetchResult> {
+async function fetchViaScrapeProxy(jsonUrl: string, token: string, cookie?: string | null, geoCode?: string | null, superMode?: boolean): Promise<FetchResult> {
   try {
-    let proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}&geoCode=sg&pureCookies=true`;
+    let proxyUrl = `https://api.scrape.do/?token=${token}&url=${encodeURIComponent(jsonUrl)}&pureCookies=true`;
+    if (geoCode) {
+      proxyUrl += `&geoCode=${geoCode}`;
+    }
+    if (superMode) {
+      proxyUrl += `&super=true`;
+    }
     if (cookie) {
       proxyUrl += `&setCookies=${encodeURIComponent(cookie)}`;
     }

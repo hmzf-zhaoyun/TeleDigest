@@ -40,6 +40,24 @@ export const CALLBACK_LINUXDO_TOGGLE = "ldo:toggle";
 export const CALLBACK_LINUXDO_TOKEN_MENU = "ldt:menu";
 export const CALLBACK_LINUXDO_TOKEN_SET = "ldt:set";
 export const CALLBACK_LINUXDO_TOKEN_DELETE = "ldt:delete";
+export const CALLBACK_SCRAPE_GEO_MENU = "geo:menu";
+export const CALLBACK_SCRAPE_GEO_SET = "geo:set";
+export const CALLBACK_SCRAPE_GEO_CUSTOM = "geo:custom";
+export const CALLBACK_SCRAPE_GEO_DELETE = "geo:delete";
+export const CALLBACK_SCRAPE_SUPER_MENU = "sup:menu";
+export const CALLBACK_SCRAPE_SUPER_TOGGLE = "sup:toggle";
+
+export const SCRAPE_GEO_PRESETS: Array<{ label: string; value: string }> = [
+  { label: "🚫 不指定 (自动)", value: "" },
+  { label: "🇺🇸 美国", value: "us" },
+  { label: "🇯🇵 日本", value: "jp" },
+  { label: "🇸🇬 新加坡", value: "sg" },
+  { label: "🇩🇪 德国", value: "de" },
+  { label: "🇬🇧 英国", value: "gb" },
+  { label: "🇭🇰 香港", value: "hk" },
+  { label: "🇰🇷 韩国", value: "kr" },
+  { label: "✏️ 自定义", value: "__custom__" },
+];
 
 export const SCHEDULE_PRESETS: Array<{ label: string; value: string; description: string }> = [
   { label: "每小时", value: "1h", description: "每隔1小时" },

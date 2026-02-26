@@ -28,6 +28,12 @@ import {
   CALLBACK_SPOILER_TOGGLE,
   CALLBACK_LINUXDO_MENU,
   CALLBACK_LINUXDO_TOGGLE,
+  CALLBACK_SCRAPE_GEO_MENU,
+  CALLBACK_SCRAPE_GEO_SET,
+  CALLBACK_SCRAPE_GEO_CUSTOM,
+  CALLBACK_SCRAPE_GEO_DELETE,
+  CALLBACK_SCRAPE_SUPER_MENU,
+  CALLBACK_SCRAPE_SUPER_TOGGLE,
   DEFAULT_LEADERBOARD_WINDOW,
   DEFAULT_LEADERBOARD_SCHEDULE,
   DEFAULT_SCHEDULE,
@@ -35,6 +41,7 @@ import {
   LEADERBOARD_WINDOW_PRESETS,
   SCHEDULE_CUSTOM_OPTIONS,
   SCHEDULE_PRESETS,
+  SCRAPE_GEO_PRESETS,
 } from "../constants";
 import type {
   Env,
@@ -54,16 +61,21 @@ import {
 import {
   clearAdminAction,
   deleteGlobalLinuxdoToken,
+  deleteScrapeGeoCode,
   ensureSchema,
   getAdminAction,
   getAllGroups,
   getGlobalLinuxdoToken,
+  getScrapeGeoCode,
   getGroupConfig,
   insertGroupConfig,
   openKvSyncWindow,
   saveGroupMessage,
   setAdminAction,
   setGlobalLinuxdoToken,
+  setScrapeGeoCode,
+  getScrapeSuper,
+  setScrapeSuper,
   updateGroupEnabled,
   updateGroupLeaderboardEnabled,
   updateGroupLeaderboardSchedule,
@@ -567,6 +579,53 @@ async function processCallbackData(
     return false;
   }
 
+  if (namespace === "geo") {
+    if (action === "menu") {
+      await sendScrapeGeoMenu(env, chatId, messageId);
+      return true;
+    }
+    if (action === "set") {
+      const encoded = parts[2] || "";
+      const geoCode = decodeCallbackValue(encoded);
+      if (!geoCode) {
+        await deleteScrapeGeoCode(env);
+      } else {
+        await setScrapeGeoCode(env, geoCode);
+      }
+      await sendScrapeGeoMenu(env, chatId, messageId);
+      return true;
+    }
+    if (action === "custom") {
+      await setAdminAction(env, userId, "set_scrape_geo", 0, ADMIN_ACTION_TTL_MINUTES);
+      await sendMessage(
+        env,
+        chatId,
+        "✍️ 请输入 scrape.do 地区代码（如 us、jp、sg、hk 等）。\n发送 \"取消\" 可退出。",
+      );
+      return true;
+    }
+    if (action === "delete") {
+      await deleteScrapeGeoCode(env);
+      await sendScrapeGeoMenu(env, chatId, messageId);
+      return true;
+    }
+    return false;
+  }
+
+  if (namespace === "sup") {
+    if (action === "menu") {
+      await sendScrapeSuperMenu(env, chatId, messageId);
+      return true;
+    }
+    if (action === "toggle") {
+      const current = await getScrapeSuper(env);
+      await setScrapeSuper(env, !current);
+      await sendScrapeSuperMenu(env, chatId, messageId);
+      return true;
+    }
+    return false;
+  }
+
   return false;
 }
 
@@ -633,6 +692,13 @@ async function handlePendingAdminAction(
     await sendMessage(env, message.chat.id, "✅ 已保存全局 Linux.do Token");
     return true;
   }
+  if (pending.action === "set_scrape_geo") {
+    const geo = content.trim().toLowerCase();
+    await setScrapeGeoCode(env, geo);
+    await clearAdminAction(env, pending.user_id);
+    await sendMessage(env, message.chat.id, `✅ 已设置 Scrape 地区: ${geo}`);
+    return true;
+  }
   return false;
 }
 
@@ -664,6 +730,12 @@ async function sendGroupList(
   ]);
   keyboard.push([
     { text: "🔗 Linuxdo Token 管理", callback_data: CALLBACK_LINUXDO_TOKEN_MENU },
+  ]);
+  keyboard.push([
+    { text: "🌍 Scrape 地区设置", callback_data: CALLBACK_SCRAPE_GEO_MENU },
+  ]);
+  keyboard.push([
+    { text: "⚡ Super 模式", callback_data: CALLBACK_SCRAPE_SUPER_MENU },
   ]);
   keyboard.push([
     { text: "🔄 刷新", callback_data: CALLBACK_PANEL_LIST },
@@ -1089,6 +1161,64 @@ async function sendLinuxdoTokenMenu(
   keyboard.push([
     { text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST },
   ]);
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendScrapeGeoMenu(
+  env: Env,
+  chatId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const currentGeo = await getScrapeGeoCode(env);
+
+  const lines = [
+    "🌍 Scrape.do 地区设置",
+    "",
+    `当前地区: ${currentGeo ? `🔹 ${currentGeo.toUpperCase()}` : "🚫 未指定 (自动)"}`,
+    "",
+    "设置 scrape.do 代理请求的出口地区，不同地区可能影响 Cloudflare 拦截策略。",
+  ];
+
+  const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (const preset of SCRAPE_GEO_PRESETS) {
+    if (preset.value === "__custom__") {
+      keyboard.push([{ text: preset.label, callback_data: CALLBACK_SCRAPE_GEO_CUSTOM }]);
+    } else {
+      const isCurrent = (preset.value || null) === (currentGeo || null);
+      const label = isCurrent ? `${preset.label} ✓` : preset.label;
+      keyboard.push([{ text: label, callback_data: `${CALLBACK_SCRAPE_GEO_SET}:${encodeCallbackValue(preset.value)}` }]);
+    }
+  }
+  keyboard.push([{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }]);
+
+  await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
+    reply_markup: { inline_keyboard: keyboard },
+  });
+}
+
+async function sendScrapeSuperMenu(
+  env: Env,
+  chatId: number,
+  messageId: number | null = null,
+): Promise<void> {
+  const enabled = await getScrapeSuper(env);
+
+  const lines = [
+    "⚡ Scrape.do Super 模式",
+    "",
+    `当前状态: ${enabled ? "✅ 开启" : "⭕ 关闭"}`,
+    "",
+    "Super 模式使用无头浏览器渲染，可绕过 Cloudflare JS Challenge。",
+    "⚠️ 每次请求消耗 5-25 credits，请注意额度。",
+  ];
+
+  const keyboard = [
+    [{ text: enabled ? "关闭 Super" : "开启 Super", callback_data: CALLBACK_SCRAPE_SUPER_TOGGLE }],
+    [{ text: "⬅️ 返回列表", callback_data: CALLBACK_PANEL_LIST }],
+  ];
 
   await sendPanelMessage(env, chatId, lines.join("\n"), messageId, {
     reply_markup: { inline_keyboard: keyboard },
