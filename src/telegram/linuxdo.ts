@@ -162,11 +162,36 @@ function parseLinuxdoResponse(data: LinuxdoApiResponse): LinuxdoPost | null {
   const author = firstPost.name || firstPost.username || "未知";
   const rawHtml = firstPost.cooked || "";
   const images = extractImages(rawHtml);
-  const content = stripHtml(rawHtml);
+  const content = normalizeLinuxdoImageUrlsInText(stripHtml(rawHtml));
 
   if (!title && !content) return null;
 
   return { title, author, content, images };
+}
+
+function normalizeLinuxdoImageUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl, "https://linux.do");
+    if (url.hostname !== "linux.do") return rawUrl;
+    if (!/\/uploads\/default\/(?:optimized|original)\//i.test(url.pathname)) return rawUrl;
+    url.pathname = url.pathname.replace(/\/uploads\/default\/optimized\//i, "/uploads/default/original/");
+    url.pathname = url.pathname.replace(
+      /_(\d+)_\d+[xX]\d+(?=\.(?:jpe?g|png|gif|webp)$)/i,
+      ""
+    );
+    return url.toString();
+  } catch {
+    if (!/^(?:https?:)?\/\/linux\.do\/uploads\/default\/(?:optimized|original)\//i.test(rawUrl) && !/^\/uploads\/default\/(?:optimized|original)\//i.test(rawUrl)) {
+      return rawUrl;
+    }
+    return rawUrl
+      .replace(/\/uploads\/default\/optimized\//i, "/uploads/default/original/")
+      .replace(/_(\d+)_\d+[xX]\d+(?=\.(?:jpe?g|png|gif|webp)(?:[?#]|$))/i, "");
+  }
+}
+
+function normalizeLinuxdoImageUrlsInText(text: string): string {
+  return text.replace(/https?:\/\/[^\s)>"]+/g, (url) => normalizeLinuxdoImageUrl(url));
 }
 
 /** Extract image URLs from Discourse cooked HTML.
@@ -178,7 +203,7 @@ function extractImages(html: string): string[] {
   const imgRe = /<img[^>]+src="([^"]+)"[^>]*>/gi;
   let m: RegExpExecArray | null;
   while ((m = imgRe.exec(html)) !== null) {
-    const url = m[1];
+    const url = normalizeLinuxdoImageUrl(m[1]);
     if (seen.has(url)) continue;
     // Skip emoji and avatar images
     if (/\/images\/emoji\//i.test(url)) continue;
