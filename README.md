@@ -48,6 +48,7 @@
    LLM_TEMPERATURE=0.7
    TG_WEBHOOK_SECRET=
    SCHEDULE_TZ_OFFSET_MINUTES=480
+   TELEGRAPH_ACCESS_TOKEN=
    # 选填：自动拼接 Webhook URL
    WORKERS_DEV_SUBDOMAIN=your-subdomain
    # 或直接指定完整地址
@@ -144,6 +145,7 @@ npm run bot:switch -- --owner-id <ID>
 | `TG_WEBHOOK_SECRET` | | Webhook 校验密钥 |
 | `SCHEDULE_TZ_OFFSET_MINUTES` | | 时区偏移（分钟），北京时间填 `480` |
 | `SCRAPE_DO_TOKEN` | | Scrape.do Token（Linux.do 预览用） |
+| `TELEGRAPH_ACCESS_TOKEN` | | Telegraph Access Token（启用 Linux.do 转 Telegraph 页面） |
 
 ## 定时表达式
 

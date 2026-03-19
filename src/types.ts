@@ -12,6 +12,7 @@ export interface Env {
   LLM_TEMPERATURE?: string;
   SCHEDULE_TZ_OFFSET_MINUTES?: string;
   SCRAPE_DO_TOKEN?: string;
+  TELEGRAPH_ACCESS_TOKEN?: string;
 }
 
 export type TelegramUpdate = {

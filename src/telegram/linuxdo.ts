@@ -25,6 +25,20 @@ interface LinuxdoApiResponse {
   };
 }
 
+type TelegraphNode = string | {
+  tag: string;
+  attrs?: Record<string, string>;
+  children?: TelegraphNode[];
+};
+
+interface TelegraphCreatePageResponse {
+  ok: boolean;
+  error?: string;
+  result?: {
+    url?: string;
+  };
+}
+
 export function extractLinuxdoUrl(text: string): string | null {
   const match = LINUXDO_URL_PATTERN.exec(text);
   if (!match) return null;
@@ -195,15 +209,21 @@ function normalizeLinuxdoImageUrlsInText(text: string): string {
 }
 
 /** Extract image URLs from Discourse cooked HTML.
- *  Only use img src (not lightbox href which may lack extension).
+ *  Prefer lightbox href (original image) instead of img src (thumbnail).
  *  Filter out emoji, avatar, and extensionless URLs. Max 10 (Telegram limit). */
 function extractImages(html: string): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
-  const imgRe = /<img[^>]+src="([^"]+)"[^>]*>/gi;
+  const lightboxAnchorRe = /<a\b[^>]*>/gi;
   let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(html)) !== null) {
-    const url = normalizeLinuxdoImageUrl(m[1]);
+
+  while ((m = lightboxAnchorRe.exec(html)) !== null) {
+    const anchorTag = m[0];
+    if (!/\blightbox\b/i.test(anchorTag)) continue;
+    const hrefMatch = /href="([^"]+)"/i.exec(anchorTag);
+    if (!hrefMatch) continue;
+
+    const url = normalizeLinuxdoImageUrl(hrefMatch[1]);
     if (seen.has(url)) continue;
     // Skip emoji and avatar images
     if (/\/images\/emoji\//i.test(url)) continue;
@@ -264,6 +284,109 @@ function formatPostMessage(post: LinuxdoPost, originalUrl: string): string {
   );
 }
 
+function truncateForTelegraph(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength)}...`;
+}
+
+function buildTelegraphContent(post: LinuxdoPost, originalUrl: string): TelegraphNode[] {
+  const nodes: TelegraphNode[] = [];
+  const text = truncateForTelegraph(post.content, 12000);
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const remainingImages = new Set(post.images);
+
+  nodes.push({
+    tag: "p",
+    children: [`作者：${post.author || "未知"}`],
+  });
+  nodes.push({
+    tag: "p",
+    children: [
+      {
+        tag: "a",
+        attrs: { href: originalUrl },
+        children: ["查看原帖"],
+      },
+    ],
+  });
+
+  for (const line of lines) {
+    const imageUrlMatch = /(https?:\/\/[^\s]+?\.(?:jpe?g|png|gif|webp)(?:\?[^\s]*)?)/i.exec(line);
+    const imageUrl = imageUrlMatch ? normalizeLinuxdoImageUrl(imageUrlMatch[1]) : null;
+    if (imageUrl && remainingImages.has(imageUrl)) {
+      nodes.push({
+        tag: "figure",
+        children: [{ tag: "img", attrs: { src: imageUrl } }],
+      });
+      remainingImages.delete(imageUrl);
+      continue;
+    }
+
+    nodes.push({
+      tag: "p",
+      children: [line],
+    });
+  }
+
+  // Fallback: append unmatched images to avoid missing media.
+  for (const imageUrl of remainingImages) {
+    nodes.push({
+      tag: "figure",
+      children: [{ tag: "img", attrs: { src: imageUrl } }],
+    });
+  }
+
+  return nodes;
+}
+
+async function createTelegraphPage(post: LinuxdoPost, originalUrl: string, env: Env): Promise<string | null> {
+  const accessToken = env.TELEGRAPH_ACCESS_TOKEN;
+  if (!accessToken) return null;
+
+  const title = post.title?.trim() || "Linux.do";
+  const content = buildTelegraphContent(post, originalUrl);
+  const body = new URLSearchParams({
+    access_token: accessToken,
+    title: truncateForTelegraph(title, 256),
+    author_name: "TeleDigest",
+    content: JSON.stringify(content),
+    return_content: "false",
+  });
+
+  try {
+    const response = await fetch("https://api.telegra.ph/createPage", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`[linuxdo] telegraph status=${response.status} body=${text.slice(0, 500)}`);
+      return null;
+    }
+    const data = await response.json() as TelegraphCreatePageResponse;
+    if (!data.ok || !data.result?.url) {
+      console.error("[linuxdo] telegraph api error:", data.error || "unknown");
+      return null;
+    }
+    return data.result.url;
+  } catch (error) {
+    console.error("[linuxdo] telegraph request failed:", error);
+    return null;
+  }
+}
+
+function formatTelegraphMessage(post: LinuxdoPost, telegraphUrl: string, originalUrl: string): string {
+  const escapedTitle = escapeHtml(post.title || "Linux.do");
+  const escapedAuthor = escapeHtml(post.author || "未知");
+  return (
+    `📘 <b>${escapedTitle}</b>\n\n` +
+    `👤 作者: ${escapedAuthor}\n` +
+    `📰 <a href="${telegraphUrl}">Telegraph 阅读</a>\n` +
+    `🔗 <a href="${originalUrl}">查看原帖</a>`
+  );
+}
+
 export async function handleLinuxdoLink(message: TelegramMessage, env: Env): Promise<boolean> {
   const text = message.text || "";
   const match = LINUXDO_URL_PATTERN.exec(text);
@@ -284,6 +407,16 @@ export async function handleLinuxdoLink(message: TelegramMessage, env: Env): Pro
   const post = await fetchLinuxdoPost(jsonUrl, env);
   if (!post) {
     await sendMessage(env, message.chat.id, "❌ 无法获取 Linux.do 帖子内容");
+    return true;
+  }
+
+  const telegraphUrl = await createTelegraphPage(post, originalUrl, env);
+  if (telegraphUrl) {
+    const telegraphMessage = formatTelegraphMessage(post, telegraphUrl, originalUrl);
+    await sendMessage(env, message.chat.id, telegraphMessage, {
+      parse_mode: "HTML",
+      disable_web_page_preview: false,
+    });
     return true;
   }
 
