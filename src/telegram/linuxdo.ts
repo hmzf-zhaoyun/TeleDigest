@@ -1,4 +1,4 @@
-import type { Env, TelegramMessage } from "../types";
+﻿import type { Env, TelegramMessage } from "../types";
 import { sendMessage, sendMediaGroup } from "./api";
 import { escapeHtml } from "../utils";
 import { getGroupConfig, getGlobalLinuxdoToken, setGlobalLinuxdoToken, getScrapeGeoCode, getScrapeSuper } from "../db";
@@ -8,8 +8,12 @@ const LINUXDO_URL_PATTERN = /https?:\/\/linux\.do\/t\/topic\/(\d+)(?:\/(\d+))?/i
 export interface LinuxdoPost {
   title: string;
   author: string;
+  rawHtml: string;
   content: string;
+  // Telegram fallback media group images (max 10)
   images: string[];
+  // Telegraph inline images (expanded list)
+  telegraphImages: string[];
 }
 
 interface LinuxdoApiResponse {
@@ -175,12 +179,20 @@ function parseLinuxdoResponse(data: LinuxdoApiResponse): LinuxdoPost | null {
 
   const author = firstPost.name || firstPost.username || "未知";
   const rawHtml = firstPost.cooked || "";
-  const images = extractImages(rawHtml);
-  const content = normalizeLinuxdoImageUrlsInText(stripHtml(rawHtml));
+  const telegraphImages = extractImages(rawHtml);
+  const images = telegraphImages.slice(0, 10);
+  const content = stripHtml(rawHtml);
 
   if (!title && !content) return null;
 
-  return { title, author, content, images };
+  return { title, author, rawHtml, content, images, telegraphImages };
+}
+
+function isValidPostImageUrl(url: string): boolean {
+  if (/\/images\/emoji\//i.test(url)) return false;
+  if (/\/user_avatar\//i.test(url)) return false;
+  if (/\/letter_avatar/i.test(url)) return false;
+  return /\.(jpe?g|png|gif|webp)/i.test(url);
 }
 
 function normalizeLinuxdoImageUrl(rawUrl: string): string {
@@ -204,43 +216,45 @@ function normalizeLinuxdoImageUrl(rawUrl: string): string {
   }
 }
 
-function normalizeLinuxdoImageUrlsInText(text: string): string {
-  return text.replace(/https?:\/\/[^\s)>"]+/g, (url) => normalizeLinuxdoImageUrl(url));
-}
-
 /** Extract image URLs from Discourse cooked HTML.
  *  Prefer lightbox href (original image) instead of img src (thumbnail).
- *  Filter out emoji, avatar, and extensionless URLs. Max 10 (Telegram limit). */
+ *  Filter out emoji, avatar, and extensionless URLs. */
 function extractImages(html: string): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
-  const lightboxAnchorRe = /<a\b[^>]*>/gi;
+  const mixedRe = /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>|<img[^>]+src="([^"]+)"[^>]*>/gi;
   let m: RegExpExecArray | null;
 
-  while ((m = lightboxAnchorRe.exec(html)) !== null) {
-    const anchorTag = m[0];
-    if (!/\blightbox\b/i.test(anchorTag)) continue;
-    const hrefMatch = /href="([^"]+)"/i.exec(anchorTag);
-    if (!hrefMatch) continue;
-
-    const url = normalizeLinuxdoImageUrl(hrefMatch[1]);
+  while ((m = mixedRe.exec(html)) !== null) {
+    const rawUrl = m[1] || m[2];
+    if (!rawUrl) continue;
+    const url = normalizeLinuxdoImageUrl(rawUrl);
     if (seen.has(url)) continue;
-    // Skip emoji and avatar images
-    if (/\/images\/emoji\//i.test(url)) continue;
-    if (/\/user_avatar\//i.test(url)) continue;
-    if (/\/letter_avatar/i.test(url)) continue;
-    // Must have image extension for Telegram to recognize
-    if (!/\.(jpe?g|png|gif|webp)/i.test(url)) continue;
+    if (!isValidPostImageUrl(url)) continue;
     seen.add(url);
     urls.push(url);
   }
-  return urls.slice(0, 10);
+  return urls;
 }
 
 function stripHtml(html: string): string {
+  const seen = new Set<string>();
+  let markerIndex = 0;
   return html
-    // 图片 → 可点击链接文本
-    .replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, (_m, src) => `\n🖼 ${src}\n`)
+    // Lightbox 图片替换为顺序占位符，不依赖 URL 匹配
+    .replace(
+      /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
+      (_m, href) => {
+        const normalized = normalizeLinuxdoImageUrl(href);
+        if (!isValidPostImageUrl(normalized)) return "\n";
+        if (seen.has(normalized)) return "\n";
+        seen.add(normalized);
+        markerIndex += 1;
+        return `\n[IMG#${markerIndex}]\n`;
+      }
+    )
+    // 非 lightbox 的 img 不再保留 URL，避免把 emoji 图片带入正文
+    .replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/p>/gi, "\n\n")
     .replace(/<\/li>/gi, "\n")
@@ -270,10 +284,15 @@ function formatPostMessage(post: LinuxdoPost, originalUrl: string): string {
   const escapedTitle = escapeHtml(post.title);
   const escapedAuthor = escapeHtml(post.author);
   let escapedContent = escapeHtml(content);
-  // 将图片占位符转为可点击链接（escapeHtml 后 URL 中 & 已变为 &amp; 需还原 href）
+  // 将编号占位符转为对应图片链接
   escapedContent = escapedContent.replace(
-    /🖼 (https?:\/\/[^\s]+)/g,
-    (_m, url) => `🖼 <a href="${url.replace(/&amp;/g, "&")}">查看图片</a>`
+    /\[IMG#(\d+)\]/g,
+    (_m, rawIndex) => {
+      const index = Number(rawIndex) - 1;
+      const url = post.images[index];
+      if (!url) return "";
+      return `🖼 <a href="${url.replace(/&/g, "&amp;")}">查看图片 ${rawIndex}</a>`;
+    }
   );
 
   return (
@@ -289,51 +308,127 @@ function truncateForTelegraph(text: string, maxLength: number): string {
   return `${text.slice(0, maxLength)}...`;
 }
 
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+function stripTags(text: string): string {
+  return text.replace(/<[^>]+>/g, "");
+}
+
+function buildTelegraphSourceText(post: LinuxdoPost): string {
+  const toMarker = (rawUrl: string): string => {
+    const normalized = normalizeLinuxdoImageUrl(rawUrl);
+    if (!isValidPostImageUrl(normalized)) return "\n";
+    return `\n[IMG] ${normalized}\n`;
+  };
+
+  const text = post.rawHtml
+    .replace(
+      /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
+      (_m, href) => toMarker(href)
+    )
+    .replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, (_m, src) => toMarker(src))
+    .replace(
+      /<pre[^>]*>\s*<code[^>]*>([\s\S]*?)<\/code>\s*<\/pre>/gi,
+      (_m, code) => `\n[CODE]\n${stripTags(code)}\n[/CODE]\n`
+    )
+    .replace(/<blockquote[^>]*>/gi, "\n[QUOTE]\n")
+    .replace(/<\/blockquote>/gi, "\n[/QUOTE]\n")
+    .replace(
+      /<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
+      (_m, href, inner) => {
+        const text = decodeHtmlEntities(stripTags(inner)).trim();
+        if (!text) return href;
+        return `${text} (${href})`;
+      }
+    )
+    .replace(/<img[^>]*>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<\/div>/gi, "\n")
+    .replace(/<li>/gi, "- ")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\b\w*\d+×\d+\s+[\d.]+\s*[KMG]?B\b/gi, "");
+
+  return decodeHtmlEntities(text)
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function buildTelegraphContent(post: LinuxdoPost, originalUrl: string): TelegraphNode[] {
   const nodes: TelegraphNode[] = [];
-  const text = truncateForTelegraph(post.content, 12000);
-  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-  const remainingImages = new Set(post.images);
+  const text = truncateForTelegraph(buildTelegraphSourceText(post), 20000);
+  const lines = text.split("\n");
 
+  nodes.push({ tag: "p", children: [`作者：${post.author || "未知"}`] });
   nodes.push({
     tag: "p",
-    children: [`作者：${post.author || "未知"}`],
-  });
-  nodes.push({
-    tag: "p",
-    children: [
-      {
-        tag: "a",
-        attrs: { href: originalUrl },
-        children: ["查看原帖"],
-      },
-    ],
+    children: [{ tag: "a", attrs: { href: originalUrl }, children: ["查看原帖"] }],
   });
 
-  for (const line of lines) {
-    const imageUrlMatch = /(https?:\/\/[^\s]+?\.(?:jpe?g|png|gif|webp)(?:\?[^\s]*)?)/i.exec(line);
-    const imageUrl = imageUrlMatch ? normalizeLinuxdoImageUrl(imageUrlMatch[1]) : null;
-    if (imageUrl && remainingImages.has(imageUrl)) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const markerMatch = /^\[IMG\]\s+(https?:\/\/\S+)$/i.exec(line);
+    if (markerMatch) {
+      const imageUrl = normalizeLinuxdoImageUrl(markerMatch[1].replace(/[),.;!?]+$/, ""));
+      if (!isValidPostImageUrl(imageUrl)) continue;
       nodes.push({
         tag: "figure",
         children: [{ tag: "img", attrs: { src: imageUrl } }],
       });
-      remainingImages.delete(imageUrl);
       continue;
     }
 
-    nodes.push({
-      tag: "p",
-      children: [line],
-    });
-  }
+    if (line === "[QUOTE]") {
+      const quoteLines: string[] = [];
+      i += 1;
+      while (i < lines.length && lines[i].trim() !== "[/QUOTE]") {
+        const q = lines[i].trim();
+        if (q) quoteLines.push(q);
+        i += 1;
+      }
+      if (quoteLines.length > 0) {
+        nodes.push({ tag: "blockquote", children: [quoteLines.join("\n")] });
+      }
+      continue;
+    }
 
-  // Fallback: append unmatched images to avoid missing media.
-  for (const imageUrl of remainingImages) {
-    nodes.push({
-      tag: "figure",
-      children: [{ tag: "img", attrs: { src: imageUrl } }],
-    });
+    if (line === "[CODE]") {
+      const codeLines: string[] = [];
+      i += 1;
+      while (i < lines.length && lines[i].trim() !== "[/CODE]") {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      const codeText = codeLines.join("\n").trim();
+      if (codeText) {
+        nodes.push({ tag: "pre", children: [codeText] });
+      }
+      continue;
+    }
+
+    if (line.startsWith("- ")) {
+      const items: TelegraphNode[] = [];
+      items.push({ tag: "li", children: [line.slice(2).trim()] });
+      while (i + 1 < lines.length && lines[i + 1].trim().startsWith("- ")) {
+        i += 1;
+        items.push({ tag: "li", children: [lines[i].trim().slice(2).trim()] });
+      }
+      nodes.push({ tag: "ul", children: items });
+      continue;
+    }
+
+    nodes.push({ tag: "p", children: [line] });
   }
 
   return nodes;
@@ -343,13 +438,11 @@ async function createTelegraphPage(post: LinuxdoPost, originalUrl: string, env: 
   const accessToken = env.TELEGRAPH_ACCESS_TOKEN;
   if (!accessToken) return null;
 
-  const title = post.title?.trim() || "Linux.do";
-  const content = buildTelegraphContent(post, originalUrl);
   const body = new URLSearchParams({
     access_token: accessToken,
-    title: truncateForTelegraph(title, 256),
+    title: truncateForTelegraph(post.title?.trim() || "Linux.do", 256),
     author_name: "TeleDigest",
-    content: JSON.stringify(content),
+    content: JSON.stringify(buildTelegraphContent(post, originalUrl)),
     return_content: "false",
   });
 
@@ -412,8 +505,7 @@ export async function handleLinuxdoLink(message: TelegramMessage, env: Env): Pro
 
   const telegraphUrl = await createTelegraphPage(post, originalUrl, env);
   if (telegraphUrl) {
-    const telegraphMessage = formatTelegraphMessage(post, telegraphUrl, originalUrl);
-    await sendMessage(env, message.chat.id, telegraphMessage, {
+    await sendMessage(env, message.chat.id, formatTelegraphMessage(post, telegraphUrl, originalUrl), {
       parse_mode: "HTML",
       disable_web_page_preview: false,
     });
