@@ -222,7 +222,7 @@ function normalizeLinuxdoImageUrl(rawUrl: string): string {
 function extractImages(html: string): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
-  const mixedRe = /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>|<img[^>]+src="([^"]+)"[^>]*>/gi;
+  const mixedRe = /<a\b[^>]*\blightbox\b[^>]*\shref="([^"]+)"[^>]*>[\s\S]*?<\/a>|<img[^>]+src="([^"]+)"[^>]*>/gi;
   let m: RegExpExecArray | null;
 
   while ((m = mixedRe.exec(html)) !== null) {
@@ -243,7 +243,7 @@ function stripHtml(html: string): string {
   return html
     // Lightbox 图片替换为顺序占位符，不依赖 URL 匹配
     .replace(
-      /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
+      /<a\b[^>]*\blightbox\b[^>]*\shref="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
       (_m, href) => {
         const normalized = normalizeLinuxdoImageUrl(href);
         if (!isValidPostImageUrl(normalized)) return "\n";
@@ -331,7 +331,7 @@ function buildTelegraphSourceText(post: LinuxdoPost): string {
 
   const text = post.rawHtml
     .replace(
-      /<a\b[^>]*\blightbox\b[^>]*href="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
+      /<a\b[^>]*\blightbox\b[^>]*\shref="([^"]+)"[^>]*>[\s\S]*?<\/a>/gi,
       (_m, href) => toMarker(href)
     )
     .replace(/<img[^>]+src="([^"]+)"[^>]*>/gi, (_m, src) => toMarker(src))
@@ -342,7 +342,7 @@ function buildTelegraphSourceText(post: LinuxdoPost): string {
     .replace(/<blockquote[^>]*>/gi, "\n[QUOTE]\n")
     .replace(/<\/blockquote>/gi, "\n[/QUOTE]\n")
     .replace(
-      /<a\b[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
+      /<a\b[^>]*\shref="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi,
       (_m, href, inner) => {
         const text = decodeHtmlEntities(stripTags(inner)).trim();
         if (!text) return href;
