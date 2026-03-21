@@ -1,0 +1,83 @@
+export const TELEGRAM_API_BASE = "https://api.telegram.org";
+export const DEFAULT_SCHEDULE = "0 * * * *";
+export const DEFAULT_LEADERBOARD_SCHEDULE = "1h";
+export const DEFAULT_LEADERBOARD_WINDOW = "1h";
+export const MAX_MESSAGES_PER_SUMMARY = 500;
+export const LEADERBOARD_TOP_N = 10;
+export const LLM_TIMEOUT_MS = 120000;
+export const TELEGRAM_TEXT_LIMIT = 4096;
+export const TELEGRAM_SAFE_LIMIT = 3500;
+export const DEFAULT_LLM_MAX_TOKENS = 1000;
+export const DEFAULT_LLM_TEMPERATURE = 0.7;
+export const ADMIN_ACTION_TTL_MINUTES = 10;
+export const KV_SYNC_WINDOW_MS = 30_000;
+export const CALLBACK_PANEL_OPEN = "panel:open";
+export const CALLBACK_PANEL_LIST = "panel:list";
+export const CALLBACK_PANEL_SYNC = "panel:sync";
+export const CALLBACK_GROUP_SHOW = "grp:show";
+export const CALLBACK_GROUP_ENABLE = "grp:enable";
+export const CALLBACK_GROUP_DISABLE = "grp:disable";
+export const CALLBACK_GROUP_SUMMARY = "grp:summary";
+export const CALLBACK_GROUP_LEADERBOARD = "grp:leaderboard";
+export const CALLBACK_GROUP_SUMMARY_MENU = "grp:summary_menu";
+export const CALLBACK_GROUP_LEADERBOARD_MENU = "grp:leaderboard_menu";
+export const CALLBACK_SCHEDULE_MENU = "sch:menu";
+export const CALLBACK_SCHEDULE_SET = "sch:set";
+export const CALLBACK_SCHEDULE_CUSTOM = "sch:custom";
+export const CALLBACK_LEADERBOARD_MENU = "lb:menu";
+export const CALLBACK_LEADERBOARD_SET = "lb:set";
+export const CALLBACK_LEADERBOARD_CUSTOM = "lb:custom";
+export const CALLBACK_LEADERBOARD_TOGGLE = "lb:toggle";
+export const CALLBACK_LEADERBOARD_WINDOW_MENU = "lb:window_menu";
+export const CALLBACK_LEADERBOARD_WINDOW_SET = "lb:window_set";
+export const CALLBACK_LEADERBOARD_WINDOW_CUSTOM = "lb:window_custom";
+export const CALLBACK_SPOILER_MENU = "spo:menu";
+export const CALLBACK_SPOILER_TOGGLE = "spo:toggle";
+export const CALLBACK_SPOILER_DELETE = "spo:delete";
+export const CALLBACK_LINUXDO_MENU = "ldo:menu";
+export const CALLBACK_LINUXDO_TOGGLE = "ldo:toggle";
+export const CALLBACK_LINUXDO_TOKEN_MENU = "ldt:menu";
+export const CALLBACK_LINUXDO_TOKEN_SET = "ldt:set";
+export const CALLBACK_LINUXDO_TOKEN_DELETE = "ldt:delete";
+export const CALLBACK_SCRAPE_GEO_MENU = "geo:menu";
+export const CALLBACK_SCRAPE_GEO_SET = "geo:set";
+export const CALLBACK_SCRAPE_GEO_CUSTOM = "geo:custom";
+export const CALLBACK_SCRAPE_GEO_DELETE = "geo:delete";
+export const CALLBACK_SCRAPE_SUPER_MENU = "sup:menu";
+export const CALLBACK_SCRAPE_SUPER_TOGGLE = "sup:toggle";
+export const SCRAPE_GEO_PRESETS = [
+    { label: "🚫 不指定 (自动)", value: "" },
+    { label: "🇺🇸 美国", value: "us" },
+    { label: "🇯🇵 日本", value: "jp" },
+    { label: "🇸🇬 新加坡", value: "sg" },
+    { label: "🇩🇪 德国", value: "de" },
+    { label: "🇬🇧 英国", value: "gb" },
+    { label: "🇭🇰 香港", value: "hk" },
+    { label: "🇰🇷 韩国", value: "kr" },
+    { label: "✏️ 自定义", value: "__custom__" },
+];
+export const SCHEDULE_PRESETS = [
+    { label: "每小时", value: "1h", description: "每隔1小时" },
+    { label: "每2小时", value: "2h", description: "每隔2小时" },
+    { label: "每4小时", value: "4h", description: "每隔4小时" },
+    { label: "每天早9点", value: "0 9 * * *", description: "每天 09:00" },
+    { label: "每天晚8点", value: "0 20 * * *", description: "每天 20:00" },
+    { label: "每12小时", value: "12h", description: "每隔12小时" },
+];
+export const SCHEDULE_CUSTOM_OPTIONS = [
+    { label: "30分钟", value: "30m" },
+    { label: "45分钟", value: "45m" },
+    { label: "90分钟", value: "90m" },
+    { label: "3小时", value: "3h" },
+    { label: "6小时", value: "6h" },
+    { label: "8小时", value: "8h" },
+];
+export const LEADERBOARD_WINDOW_PRESETS = [
+    { label: "1小时", value: "1h", description: "统计过去1小时" },
+    { label: "2小时", value: "2h", description: "统计过去2小时" },
+    { label: "4小时", value: "4h", description: "统计过去4小时" },
+    { label: "8小时", value: "8h", description: "统计过去8小时" },
+    { label: "12小时", value: "12h", description: "统计过去12小时" },
+    { label: "1天", value: "1d", description: "统计过去1天" },
+    { label: "3天", value: "3d", description: "统计过去3天" },
+];

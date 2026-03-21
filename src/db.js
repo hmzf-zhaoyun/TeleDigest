@@ -1,0 +1,430 @@
+import { DEFAULT_LEADERBOARD_SCHEDULE, DEFAULT_LEADERBOARD_WINDOW, DEFAULT_SCHEDULE, } from "./constants";
+let schemaReady = false;
+let kvWindowUntil = 0;
+let kvWindowCheckedAt = 0;
+const KV_WINDOW_CACHE_MS = 5_000;
+const KV_SYNC_WINDOW_KEY = "kv_sync_window_until";
+export async function ensureSchema(env) {
+    if (schemaReady)
+        return;
+    schemaReady = true;
+    try {
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`).run();
+        await env.DB.prepare(`CREATE TABLE IF NOT EXISTS admin_actions (
+        user_id INTEGER PRIMARY KEY,
+        action TEXT NOT NULL,
+        group_id INTEGER NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        expires_at TEXT
+      )`).run();
+        const info = await env.DB.prepare("PRAGMA table_info(group_configs)").all();
+        const columns = new Set((info.results || []).map((row) => row.name));
+        if (!columns.has("leaderboard_schedule")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN leaderboard_schedule TEXT DEFAULT '1h'").run();
+        }
+        if (!columns.has("leaderboard_enabled")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN leaderboard_enabled INTEGER DEFAULT 0").run();
+        }
+        if (!columns.has("leaderboard_window")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN leaderboard_window TEXT DEFAULT '1h'").run();
+        }
+        if (!columns.has("last_leaderboard_time")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN last_leaderboard_time TEXT").run();
+        }
+        if (!columns.has("spoiler_enabled")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN spoiler_enabled INTEGER DEFAULT 0").run();
+        }
+        if (!columns.has("spoiler_auto_delete")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN spoiler_auto_delete INTEGER DEFAULT 0").run();
+        }
+        if (!columns.has("linuxdo_enabled")) {
+            await env.DB.prepare("ALTER TABLE group_configs ADD COLUMN linuxdo_enabled INTEGER DEFAULT 0").run();
+        }
+        const msgInfo = await env.DB.prepare("PRAGMA table_info(group_messages)").all();
+        const msgColumns = new Set((msgInfo.results || []).map((row) => row.name));
+        if (!msgColumns.has("sender_is_bot")) {
+            await env.DB.prepare("ALTER TABLE group_messages ADD COLUMN sender_is_bot INTEGER DEFAULT 0").run();
+        }
+        await env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_messages_group_date ON group_messages(group_id, message_date)").run();
+        // 一次性迁移: 将 user_linuxdo_tokens 中的 token 迁移到 app_settings 全局 token
+        try {
+            const oldToken = await env.DB.prepare("SELECT token FROM user_linuxdo_tokens LIMIT 1").first();
+            if (oldToken?.token) {
+                const existing = await env.DB.prepare("SELECT value FROM app_settings WHERE key = 'linuxdo_token'").first();
+                if (!existing) {
+                    const now = new Date().toISOString();
+                    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at) VALUES ('linuxdo_token', ?, ?)`).bind(oldToken.token, now).run();
+                    console.log("[migration] migrated user linuxdo token to global");
+                }
+                await env.DB.prepare("DROP TABLE IF EXISTS user_linuxdo_tokens").run();
+                console.log("[migration] dropped user_linuxdo_tokens table");
+            }
+        }
+        catch {
+            // 表不存在或已迁移，忽略
+        }
+    }
+    catch (error) {
+        schemaReady = false;
+        console.error("ensureSchema failed", error);
+    }
+}
+export async function getGroupConfig(env, groupId) {
+    const row = await env.DB.prepare(`SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
+            target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
+     FROM group_configs WHERE group_id = ?`)
+        .bind(groupId)
+        .first();
+    return row || null;
+}
+export async function getAllGroups(env) {
+    const results = await env.DB.prepare(`SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
+            target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
+     FROM group_configs ORDER BY updated_at DESC`).all();
+    return results.results || [];
+}
+export async function getEnabledGroups(env) {
+    const results = await env.DB.prepare(`SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
+            target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
+     FROM group_configs WHERE enabled = 1`).all();
+    return results.results || [];
+}
+export async function getLeaderboardEnabledGroups(env) {
+    const results = await env.DB.prepare(`SELECT group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled, leaderboard_window,
+            target_chat_id, last_summary_time, last_message_id, last_leaderboard_time,
+            spoiler_enabled, spoiler_auto_delete, linuxdo_enabled
+     FROM group_configs WHERE leaderboard_enabled = 1`).all();
+    return results.results || [];
+}
+export async function insertGroupConfig(env, groupId, groupName, enabled, schedule) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO group_configs
+     (group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled,
+      leaderboard_window, target_chat_id, last_summary_time, last_message_id,
+      last_leaderboard_time, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 0, ?, NULL, NULL, 0, NULL, ?, ?)`)
+        .bind(groupId, groupName, enabled ? 1 : 0, schedule, DEFAULT_LEADERBOARD_SCHEDULE, DEFAULT_LEADERBOARD_WINDOW, now, now)
+        .run();
+}
+export async function updateGroupEnabled(env, groupId, enabled) {
+    await env.DB.prepare("UPDATE group_configs SET enabled = ?, updated_at = ? WHERE group_id = ?")
+        .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupSchedule(env, groupId, schedule) {
+    await env.DB.prepare("UPDATE group_configs SET schedule = ?, updated_at = ? WHERE group_id = ?")
+        .bind(schedule, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupLeaderboardSchedule(env, groupId, schedule) {
+    await env.DB.prepare("UPDATE group_configs SET leaderboard_schedule = ?, updated_at = ? WHERE group_id = ?")
+        .bind(schedule, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupLeaderboardEnabled(env, groupId, enabled) {
+    await env.DB.prepare("UPDATE group_configs SET leaderboard_enabled = ?, updated_at = ? WHERE group_id = ?")
+        .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupLeaderboardWindow(env, groupId, window) {
+    await env.DB.prepare("UPDATE group_configs SET leaderboard_window = ?, updated_at = ? WHERE group_id = ?")
+        .bind(window, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupName(env, groupId, groupName) {
+    await env.DB.prepare("UPDATE group_configs SET group_name = ?, updated_at = ? WHERE group_id = ?")
+        .bind(groupName, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupSpoilerEnabled(env, groupId, enabled) {
+    await env.DB.prepare("UPDATE group_configs SET spoiler_enabled = ?, updated_at = ? WHERE group_id = ?")
+        .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupSpoilerAutoDelete(env, groupId, enabled) {
+    await env.DB.prepare("UPDATE group_configs SET spoiler_auto_delete = ?, updated_at = ? WHERE group_id = ?")
+        .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupLinuxdoEnabled(env, groupId, enabled) {
+    await env.DB.prepare("UPDATE group_configs SET linuxdo_enabled = ?, updated_at = ? WHERE group_id = ?")
+        .bind(enabled ? 1 : 0, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupAfterSummary(env, groupId, lastMessageId) {
+    await env.DB.prepare("UPDATE group_configs SET last_summary_time = ?, last_message_id = ?, updated_at = ? WHERE group_id = ?")
+        .bind(new Date().toISOString(), lastMessageId, new Date().toISOString(), groupId)
+        .run();
+}
+export async function updateGroupAfterLeaderboard(env, groupId, lastLeaderboardTime) {
+    await env.DB.prepare("UPDATE group_configs SET last_leaderboard_time = ?, updated_at = ? WHERE group_id = ?")
+        .bind(lastLeaderboardTime, new Date().toISOString(), groupId)
+        .run();
+}
+export async function setAdminAction(env, userId, action, groupId, ttlMinutes) {
+    const expiresAt = new Date(Date.now() + ttlMinutes * 60_000).toISOString();
+    await env.DB.prepare(`INSERT INTO admin_actions (user_id, action, group_id, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       action = excluded.action,
+       group_id = excluded.group_id,
+       expires_at = excluded.expires_at,
+       created_at = excluded.created_at`)
+        .bind(userId, action, groupId, expiresAt, new Date().toISOString())
+        .run();
+}
+export async function getAdminAction(env, userId) {
+    const row = await env.DB.prepare(`SELECT user_id, action, group_id, expires_at
+     FROM admin_actions WHERE user_id = ?`)
+        .bind(userId)
+        .first();
+    if (!row) {
+        return null;
+    }
+    if (row.expires_at) {
+        const expiresAt = Date.parse(row.expires_at);
+        if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+            await clearAdminAction(env, userId);
+            return null;
+        }
+    }
+    return row;
+}
+export async function clearAdminAction(env, userId) {
+    await env.DB.prepare("DELETE FROM admin_actions WHERE user_id = ?")
+        .bind(userId)
+        .run();
+}
+export async function openKvSyncWindow(env, durationMs) {
+    const until = Date.now() + durationMs;
+    kvWindowUntil = until;
+    kvWindowCheckedAt = Date.now();
+    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`)
+        .bind(KV_SYNC_WINDOW_KEY, String(until), new Date().toISOString())
+        .run();
+    return until;
+}
+export async function isKvSyncWindowOpen(env) {
+    const now = Date.now();
+    if (kvWindowUntil > now) {
+        return true;
+    }
+    if (now - kvWindowCheckedAt < KV_WINDOW_CACHE_MS) {
+        return false;
+    }
+    kvWindowCheckedAt = now;
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?")
+        .bind(KV_SYNC_WINDOW_KEY)
+        .first();
+    const until = row?.value ? Number(row.value) : 0;
+    if (Number.isFinite(until) && until > now) {
+        kvWindowUntil = until;
+        return true;
+    }
+    kvWindowUntil = 0;
+    return false;
+}
+export async function getUnsummarizedMessages(env, groupId, limit, since) {
+    const query = since
+        ? `SELECT message_id, group_id, sender_id, sender_name, content, message_date, has_media, media_type, is_summarized
+     FROM group_messages
+     WHERE group_id = ? AND is_summarized = 0 AND message_date >= ?
+     ORDER BY message_date ASC
+     LIMIT ?`
+        : `SELECT message_id, group_id, sender_id, sender_name, content, message_date, has_media, media_type, is_summarized
+     FROM group_messages
+     WHERE group_id = ? AND is_summarized = 0
+     ORDER BY message_date ASC
+     LIMIT ?`;
+    const stmt = since
+        ? env.DB.prepare(query).bind(groupId, since, limit)
+        : env.DB.prepare(query).bind(groupId, limit);
+    const results = await stmt.all();
+    return results.results || [];
+}
+/**
+ * Mark all unsummarized messages older than `before` as summarized (skip them).
+ */
+export async function markOldMessagesSkipped(env, groupId, before) {
+    const result = await env.DB.prepare(`UPDATE group_messages SET is_summarized = 1
+     WHERE group_id = ? AND is_summarized = 0 AND message_date < ?`)
+        .bind(groupId, before)
+        .run();
+    return result.meta?.changes ?? 0;
+}
+export async function getMessageLeaderboard(env, groupId, startIso, endIso, limit) {
+    const results = await env.DB.prepare(`SELECT sender_id,
+            COALESCE(MAX(sender_name), '') AS sender_name,
+            COUNT(*) AS message_count
+     FROM group_messages
+     WHERE group_id = ?
+       AND message_date >= ? AND message_date < ?
+       AND COALESCE(sender_is_bot, 0) = 0
+     GROUP BY sender_id
+     ORDER BY message_count DESC, MAX(message_date) DESC
+     LIMIT ?`)
+        .bind(groupId, startIso, endIso, limit)
+        .all();
+    return results.results || [];
+}
+export async function markMessagesSummarized(env, groupId, upToMessageId) {
+    await env.DB.prepare(`UPDATE group_messages
+     SET is_summarized = 1
+     WHERE group_id = ? AND message_id <= ? AND is_summarized = 0`)
+        .bind(groupId, upToMessageId)
+        .run();
+}
+export async function saveGroupMessage(message, env) {
+    const chat = message.chat;
+    const groupId = chat.id;
+    const groupName = chat.title || "";
+    await upsertGroupFromMessage(env, groupId, groupName);
+    // Premium 用户用频道身份发言时，sender_chat 是频道，from 可能仍是用户
+    const senderChat = message.sender_chat;
+    const sender = message.from;
+    const isChannelIdentity = senderChat && senderChat.type === "channel";
+    const senderName = isChannelIdentity
+        ? (senderChat.title || senderChat.username || "频道用户")
+        : buildSenderName(sender);
+    const senderId = isChannelIdentity ? senderChat.id : (sender?.id || 0);
+    const senderIsBot = isChannelIdentity ? 0 : (sender?.is_bot ? 1 : 0);
+    const content = message.text || message.caption || "";
+    const mediaType = detectMediaType(message);
+    const hasMedia = mediaType !== null;
+    const messageDate = new Date(message.date * 1000).toISOString();
+    await env.DB.prepare(`INSERT OR IGNORE INTO group_messages
+     (message_id, group_id, sender_id, sender_name, sender_is_bot, content, message_date, has_media, media_type, is_summarized, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`)
+        .bind(message.message_id, groupId, senderId, senderName, senderIsBot, content, messageDate, hasMedia ? 1 : 0, mediaType, new Date().toISOString())
+        .run();
+}
+async function upsertGroupFromMessage(env, groupId, groupName) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO group_configs
+     (group_id, group_name, enabled, schedule, leaderboard_schedule, leaderboard_enabled,
+      leaderboard_window, target_chat_id, last_summary_time, last_message_id,
+      last_leaderboard_time, created_at, updated_at)
+     VALUES (?, ?, 0, ?, ?, 0, ?, NULL, NULL, 0, NULL, ?, ?)
+     ON CONFLICT(group_id) DO UPDATE SET
+       group_name = excluded.group_name,
+       updated_at = excluded.updated_at`)
+        .bind(groupId, groupName, DEFAULT_SCHEDULE, DEFAULT_LEADERBOARD_SCHEDULE, DEFAULT_LEADERBOARD_WINDOW, now, now)
+        .run();
+}
+function buildSenderName(sender) {
+    if (!sender) {
+        return "Unknown";
+    }
+    const fullName = [sender.first_name, sender.last_name].filter(Boolean).join(" ");
+    return fullName || sender.username || String(sender.id);
+}
+function detectMediaType(message) {
+    if (message.photo && message.photo.length > 0)
+        return "photo";
+    if (message.video)
+        return "video";
+    if (message.document)
+        return "document";
+    if (message.audio)
+        return "audio";
+    if (message.voice)
+        return "voice";
+    if (message.sticker)
+        return "sticker";
+    if (message.animation)
+        return "animation";
+    return null;
+}
+const LINUXDO_TOKEN_KEY = "linuxdo_token";
+const SCRAPE_GEO_KEY = "scrape_geo_code";
+const SCRAPE_SUPER_KEY = "scrape_super";
+export async function getGlobalLinuxdoToken(env) {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?")
+        .bind(LINUXDO_TOKEN_KEY)
+        .first();
+    return row?.value || null;
+}
+export async function setGlobalLinuxdoToken(env, token) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`)
+        .bind(LINUXDO_TOKEN_KEY, token, now)
+        .run();
+}
+export async function deleteGlobalLinuxdoToken(env) {
+    const result = await env.DB.prepare("DELETE FROM app_settings WHERE key = ?")
+        .bind(LINUXDO_TOKEN_KEY)
+        .run();
+    return (result.meta?.changes ?? 0) > 0;
+}
+export async function getScrapeGeoCode(env) {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?")
+        .bind(SCRAPE_GEO_KEY)
+        .first();
+    return row?.value || null;
+}
+export async function setScrapeGeoCode(env, geoCode) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`)
+        .bind(SCRAPE_GEO_KEY, geoCode, now)
+        .run();
+}
+export async function deleteScrapeGeoCode(env) {
+    const result = await env.DB.prepare("DELETE FROM app_settings WHERE key = ?")
+        .bind(SCRAPE_GEO_KEY)
+        .run();
+    return (result.meta?.changes ?? 0) > 0;
+}
+export async function getScrapeSuper(env) {
+    const row = await env.DB.prepare("SELECT value FROM app_settings WHERE key = ?")
+        .bind(SCRAPE_SUPER_KEY)
+        .first();
+    return row?.value === "1";
+}
+export async function setScrapeSuper(env, enabled) {
+    const now = new Date().toISOString();
+    await env.DB.prepare(`INSERT INTO app_settings (key, value, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       value = excluded.value,
+       updated_at = excluded.updated_at`)
+        .bind(SCRAPE_SUPER_KEY, enabled ? "1" : "0", now)
+        .run();
+}
+/**
+ * Delete summarized messages older than today (UTC+8).
+ * Keeps all unsummarized messages and today's summarized messages.
+ */
+export async function purgeOldMessages(env) {
+    // UTC+8 today start: subtract 8 hours from current UTC to get local midnight
+    const now = new Date();
+    const todayStart = new Date(now.getTime() + 8 * 60 * 60 * 1000);
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const cutoff = new Date(todayStart.getTime() - 8 * 60 * 60 * 1000).toISOString();
+    const result = await env.DB.prepare(`DELETE FROM group_messages WHERE is_summarized = 1 AND message_date < ?`)
+        .bind(cutoff)
+        .run();
+    const deleted = result.meta?.changes ?? 0;
+    if (deleted > 0) {
+        console.log(`[purge] deleted ${deleted} old summarized messages (before ${cutoff})`);
+    }
+    return deleted;
+}
