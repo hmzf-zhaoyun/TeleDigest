@@ -1082,33 +1082,68 @@ async function renderSvgToPng(svg: string, width: number): Promise<Uint8Array> {
   return rendered.asPng();
 }
 
-async function uploadTelegraphImage(png: Uint8Array): Promise<string | null> {
-  const formData = new FormData();
-  formData.append("file", new Blob([png], { type: "image/png" }), `linuxdo-table-${Date.now()}.png`);
+function getImageUploadBase(env: Env): string | null {
+  const base = env.IMAGE_UPLOAD_BASE?.trim();
+  if (!base) return null;
+  return base.replace(/\/+$/g, "");
+}
 
-  const response = await fetch("https://telegra.ph/upload", {
+function resolveUploadedImageUrl(uploadBase: string, src: string): string {
+  const normalizeRawFileUrl = (url: string): string => {
+    if (/\/file\/[^?]+$/i.test(url)) {
+      return `${url}?raw=true`;
+    }
+    return url;
+  };
+
+  if (/^https?:\/\//i.test(src)) {
+    return normalizeRawFileUrl(src);
+  }
+  const absoluteUrl = src.startsWith("/") ? `${uploadBase}${src}` : `${uploadBase}/${src}`;
+  return normalizeRawFileUrl(absoluteUrl);
+}
+
+async function uploadTelegraphImage(png: Uint8Array, env: Env): Promise<string | null> {
+  const uploadBase = getImageUploadBase(env);
+  if (!uploadBase) {
+    console.log("[linuxdo] skip image upload: IMAGE_UPLOAD_BASE is not configured");
+    return null;
+  }
+
+  const uploadUrl = `${uploadBase}/upload`;
+  console.log(`[linuxdo] image upload start url=${uploadUrl} bytes=${png.byteLength}`);
+
+  const formData = new FormData();
+  formData.append("file", new File([png], `linuxdo-table-${Date.now()}.png`, { type: "image/png" }));
+
+  const response = await fetch(uploadUrl, {
     method: "POST",
     body: formData,
   });
+  console.log(`[linuxdo] image upload response status=${response.status} ok=${response.ok}`);
   if (!response.ok) {
     const text = await response.text();
-    console.error(`[linuxdo] telegraph upload status=${response.status} body=${text.slice(0, 300)}`);
+    console.error(`[linuxdo] image upload failed url=${uploadUrl} status=${response.status} body=${text.slice(0, 500)}`);
     return null;
   }
 
   const data = await response.json() as TelegraphUploadResponseItem[] | TelegraphUploadResponseItem;
   if (Array.isArray(data) && data[0]?.src) {
-    return `https://telegra.ph${data[0].src}`;
+    const imageUrl = resolveUploadedImageUrl(uploadBase, data[0].src);
+    console.log(`[linuxdo] image upload success url=${imageUrl}`);
+    return imageUrl;
   }
   if (!Array.isArray(data) && data.src) {
-    return `https://telegra.ph${data.src}`;
+    const imageUrl = resolveUploadedImageUrl(uploadBase, data.src);
+    console.log(`[linuxdo] image upload success url=${imageUrl}`);
+    return imageUrl;
   }
 
-  console.error("[linuxdo] telegraph upload invalid response:", JSON.stringify(data).slice(0, 300));
+  console.error(`[linuxdo] image upload invalid response url=${uploadUrl} body=${JSON.stringify(data).slice(0, 500)}`);
   return null;
 }
 
-async function buildTableTelegraphNodeFromText(tableText: string): Promise<TelegraphNode | null> {
+async function buildTableTelegraphNodeFromText(tableText: string, env: Env): Promise<TelegraphNode | null> {
   const fallbackNode = buildPlainTableTelegraphNode(tableText);
   if (!fallbackNode) return null;
 
@@ -1118,7 +1153,7 @@ async function buildTableTelegraphNodeFromText(tableText: string): Promise<Teleg
   try {
     const { svg, width } = renderTableSvg(parsedTable);
     const png = await renderSvgToPng(svg, width);
-    const uploadedUrl = await uploadTelegraphImage(png);
+    const uploadedUrl = await uploadTelegraphImage(png, env);
     if (uploadedUrl) {
       return { tag: "figure", children: [{ tag: "img", attrs: { src: uploadedUrl } }] };
     }
@@ -1137,7 +1172,7 @@ function buildFigureTelegraphNodeFromUrl(rawUrl: string): TelegraphNode | null {
   return { tag: "figure", children: [{ tag: "img", attrs: { src: imageUrl } }] };
 }
 
-async function buildMarkdownBlockTelegraphNodes(markdown: string, textTag: "p" | "h3" | "h4"): Promise<TelegraphNode[]> {
+async function buildMarkdownBlockTelegraphNodes(markdown: string, textTag: "p" | "h3" | "h4", env: Env): Promise<TelegraphNode[]> {
   const segments = splitMarkdownSpecialSegments(markdown);
   if (segments.length === 0) {
     const children = buildInlineChildrenFromMarkdown(markdown);
@@ -1155,7 +1190,7 @@ async function buildMarkdownBlockTelegraphNodes(markdown: string, textTag: "p" |
     }
 
     if (segment.type === "table") {
-      const tableNode = await buildTableTelegraphNodeFromText(segment.value);
+      const tableNode = await buildTableTelegraphNodeFromText(segment.value, env);
       if (tableNode) {
         nodes.push(tableNode);
       }
@@ -1218,10 +1253,10 @@ function buildOneboxTelegraphNodes(html: string): TelegraphNode[] {
   return nodes;
 }
 
-async function buildTableTelegraphNode(tableHtml: string): Promise<TelegraphNode | null> {
+async function buildTableTelegraphNode(tableHtml: string, env: Env): Promise<TelegraphNode | null> {
   const markdown = convertTableToMarkdown(tableHtml);
   const tableText = extractTableTextFromMarkdown(markdown);
-  return buildTableTelegraphNodeFromText(tableText);
+  return buildTableTelegraphNodeFromText(tableText, env);
 }
 
 function trimTelegraphBreaks(nodes: TelegraphNode[]): TelegraphNode[] {
@@ -1361,7 +1396,7 @@ function buildFlattenedNestedListParagraphNodes(listHtml: string, baseIndentLeve
   return trimTelegraphBreaks(nodes);
 }
 
-async function buildListItemTelegraphChildren(itemHtml: string): Promise<TelegraphNode[]> {
+async function buildListItemTelegraphChildren(itemHtml: string, env: Env): Promise<TelegraphNode[]> {
   const segments = splitItemIntoListAwareSegments(itemHtml);
   const children: TelegraphNode[] = [];
   const inlineParts: TelegraphNode[][] = [];
@@ -1405,7 +1440,7 @@ async function buildListItemTelegraphChildren(itemHtml: string): Promise<Telegra
       if (htmlSegment.type === "block") {
         hasBlockChild = true;
         flushInlineParts();
-        const blockNodes = await buildTelegraphNodesFromCookedHtml(htmlSegment.value);
+        const blockNodes = await buildTelegraphNodesFromCookedHtml(htmlSegment.value, env);
         for (const blockNode of blockNodes) {
           children.push(blockNode);
         }
@@ -1423,14 +1458,14 @@ async function buildListItemTelegraphChildren(itemHtml: string): Promise<Telegra
   return trimTelegraphBreaks(children);
 }
 
-async function buildListTelegraphNode(listHtml: string): Promise<TelegraphNode | null> {
+async function buildListTelegraphNode(listHtml: string, env: Env): Promise<TelegraphNode | null> {
   const ordered = /^<ol\b/i.test(listHtml);
   const innerHtml = listHtml.replace(/^<(?:ol|ul)\b[^>]*>/i, "").replace(/<\/(?:ol|ul)>$/i, "");
   const itemHtmls = extractTopLevelListItems(innerHtml);
   const items: TelegraphNode[] = [];
 
   for (const itemHtml of itemHtmls) {
-    const children = await buildListItemTelegraphChildren(itemHtml);
+    const children = await buildListItemTelegraphChildren(itemHtml, env);
     if (children.length > 0) {
       items.push({ tag: "li", children });
     }
@@ -1447,7 +1482,7 @@ function findNextCookedBlockStart(html: string, fromIndex: number): number {
   return match ? match.index : -1;
 }
 
-async function buildTelegraphNodesFromCookedHtml(html: string): Promise<TelegraphNode[]> {
+async function buildTelegraphNodesFromCookedHtml(html: string, env: Env): Promise<TelegraphNode[]> {
   const nodes: TelegraphNode[] = [];
   let cursor = 0;
   const source = html.replace(/<a\b[^>]*\bclass="[^"]*\banchor\b[^"]*"[^>]*>\s*<\/a>/gi, "");
@@ -1479,7 +1514,7 @@ async function buildTelegraphNodesFromCookedHtml(html: string): Promise<Telegrap
       const summary = textFromInlineHtml(summaryMatch?.[1] || "") || "详情";
       nodes.push({ tag: "p", children: [{ tag: "strong", children: [`展开：${summary}`] }] });
       const bodyHtml = summaryMatch ? inner.replace(summaryMatch[0], "") : inner;
-      nodes.push(...await buildTelegraphNodesFromCookedHtml(bodyHtml));
+      nodes.push(...await buildTelegraphNodesFromCookedHtml(bodyHtml, env));
       cursor = end;
       continue;
     }
@@ -1498,23 +1533,23 @@ async function buildTelegraphNodesFromCookedHtml(html: string): Promise<Telegrap
           nodes.push({ tag: "pre", children: [codeText] });
         }
       } else if (tagName === "blockquote") {
-        const quoteChildren = await buildTelegraphNodesFromCookedHtml(inner);
+        const quoteChildren = await buildTelegraphNodesFromCookedHtml(inner, env);
         if (quoteChildren.length > 0) {
           nodes.push({ tag: "blockquote", children: quoteChildren });
         }
       } else if (tagName === "table") {
-        const tableNode = await buildTableTelegraphNode(block);
+        const tableNode = await buildTableTelegraphNode(block, env);
         if (tableNode) nodes.push(tableNode);
       } else if (tagName === "ul" || tagName === "ol") {
-        const listNode = await buildListTelegraphNode(block);
+        const listNode = await buildListTelegraphNode(block, env);
         if (listNode) nodes.push(listNode);
       } else if (/^h[1-6]$/.test(tagName)) {
         const level = Number(tagName.slice(1));
         const headingMarkdown = convertCookedToMarkdown(inner);
-        nodes.push(...await buildMarkdownBlockTelegraphNodes(headingMarkdown, level === 1 ? "h3" : "h4"));
+        nodes.push(...await buildMarkdownBlockTelegraphNodes(headingMarkdown, level === 1 ? "h3" : "h4", env));
       } else {
         const paragraphMarkdown = convertCookedToMarkdown(inner);
-        nodes.push(...await buildMarkdownBlockTelegraphNodes(paragraphMarkdown, "p"));
+        nodes.push(...await buildMarkdownBlockTelegraphNodes(paragraphMarkdown, "p", env));
       }
 
       cursor = end;
@@ -1548,7 +1583,7 @@ async function buildTelegraphNodesFromCookedHtml(html: string): Promise<Telegrap
       const nextBlockStart = findNextCookedBlockStart(source, cursor + 1);
       const fragmentEnd = nextBlockStart === -1 ? source.length : nextBlockStart;
       const fragment = source.slice(cursor, fragmentEnd);
-      nodes.push(...await buildMarkdownBlockTelegraphNodes(convertCookedToMarkdown(fragment), "p"));
+      nodes.push(...await buildMarkdownBlockTelegraphNodes(convertCookedToMarkdown(fragment), "p", env));
       cursor = fragmentEnd;
       continue;
     }
@@ -1556,7 +1591,7 @@ async function buildTelegraphNodesFromCookedHtml(html: string): Promise<Telegrap
     const nextBlockStart = findNextCookedBlockStart(source, cursor);
     const fragmentEnd = nextBlockStart === -1 ? source.length : nextBlockStart;
     const fragment = source.slice(cursor, fragmentEnd);
-    nodes.push(...await buildMarkdownBlockTelegraphNodes(convertCookedToMarkdown(fragment), "p"));
+    nodes.push(...await buildMarkdownBlockTelegraphNodes(convertCookedToMarkdown(fragment), "p", env));
     cursor = fragmentEnd;
   }
 
@@ -1732,7 +1767,7 @@ function parseTelegraphList(lines: string[], startIndex: number, indent: number)
   };
 }
 
-async function buildTelegraphContent(post: LinuxdoPost, originalUrl: string): Promise<TelegraphNode[]> {
+async function buildTelegraphContent(post: LinuxdoPost, originalUrl: string, env: Env): Promise<TelegraphNode[]> {
   const nodes: TelegraphNode[] = [];
 
   nodes.push({ tag: "p", children: [`作者：${post.author || "未知"}`] });
@@ -1741,7 +1776,7 @@ async function buildTelegraphContent(post: LinuxdoPost, originalUrl: string): Pr
     children: [{ tag: "a", attrs: { href: originalUrl }, children: ["查看原帖"] }],
   });
 
-  const cookedNodes = await buildTelegraphNodesFromCookedHtml(truncateForTelegraph(post.rawHtml, 40000));
+  const cookedNodes = await buildTelegraphNodesFromCookedHtml(truncateForTelegraph(post.rawHtml, 40000), env);
   nodes.push(...mergeSequentialListNodes(cookedNodes));
 
   return nodes;
@@ -1750,7 +1785,7 @@ async function buildTelegraphContent(post: LinuxdoPost, originalUrl: string): Pr
 async function createTelegraphPage(post: LinuxdoPost, originalUrl: string, env: Env): Promise<string | null> {
   const accessToken = env.TELEGRAPH_ACCESS_TOKEN;
   if (!accessToken) return null;
-  const content = await buildTelegraphContent(post, originalUrl);
+  const content = await buildTelegraphContent(post, originalUrl, env);
 
   const body = new URLSearchParams({
     access_token: accessToken,

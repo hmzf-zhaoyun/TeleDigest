@@ -13,6 +13,7 @@ export interface Env {
   SCHEDULE_TZ_OFFSET_MINUTES?: string;
   SCRAPE_DO_TOKEN?: string;
   TELEGRAPH_ACCESS_TOKEN?: string;
+  IMAGE_UPLOAD_BASE?: string;
 }
 
 export type TelegramUpdate = {
