@@ -34,6 +34,10 @@ dist/
 build/
 *.egg-info/
 
+# TypeScript 源码目录下误生成的编译产物
+src/**/*.js
+src/**/*.js.map
+
 # 文档运行目录
 docs/current/
 
