@@ -28,7 +28,7 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env, c
     return;
   }
 
-  if (message.from?.is_bot) {
+  if (message.from?.is_bot && !message.sender_chat) {
     return;
   }
 
