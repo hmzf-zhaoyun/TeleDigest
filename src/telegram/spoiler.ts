@@ -28,17 +28,37 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env, c
     return;
   }
 
+  const shouldLogDebug = shouldLogSpoilerDebug(message);
   if (message.from?.is_bot && !message.sender_chat) {
+    if (shouldLogDebug) {
+      logSpoilerDebug(message, "skip_bot_without_sender_chat");
+    }
     return;
   }
 
   if (!shouldTriggerSpoiler(message)) {
+    if (shouldLogDebug) {
+      logSpoilerDebug(message, "skip_not_triggered");
+    }
     return;
   }
 
   const config = await getGroupConfig(env, chat.id);
   if (!config || Number(config.spoiler_enabled) !== 1) {
+    if (shouldLogDebug) {
+      logSpoilerDebug(message, "skip_config_disabled", {
+        has_config: Boolean(config),
+        spoiler_enabled: config?.spoiler_enabled ?? null,
+      });
+    }
     return;
+  }
+
+  if (shouldLogDebug) {
+    logSpoilerDebug(message, "triggered", {
+      spoiler_enabled: config.spoiler_enabled,
+      spoiler_auto_delete: config.spoiler_auto_delete,
+    });
   }
 
   const headerParts: string[] = [];
@@ -74,6 +94,11 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env, c
         ctx,
       );
       if (queued) {
+        if (shouldLogDebug) {
+          logSpoilerDebug(message, "media_group_queued", {
+            spoiler_auto_delete: config.spoiler_auto_delete,
+          });
+        }
         return;
       }
     }
@@ -148,8 +173,18 @@ export async function handleSpoilerMessage(message: TelegramMessage, env: Env, c
         message_id: message.message_id,
       });
     }
+    if (shouldLogDebug) {
+      logSpoilerDebug(message, sent ? "sent" : "skip_no_supported_send_target", {
+        auto_deleted: sent && Number(config.spoiler_auto_delete) === 1,
+      });
+    }
   } catch (error) {
     console.error("spoiler handling failed", error);
+    if (shouldLogDebug) {
+      logSpoilerDebug(message, "error", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 
@@ -335,8 +370,62 @@ function shouldTriggerSpoiler(message: TelegramMessage): boolean {
   if (isForwardedMessage(message) && hasSpoilerSupportedMedia(message)) {
     return true;
   }
+  return hasNsfwTag(message);
+}
+
+function hasNsfwTag(message: TelegramMessage): boolean {
   const text = message.text || message.caption || "";
   return /#nsfw/i.test(text);
+}
+
+function shouldLogSpoilerDebug(message: TelegramMessage): boolean {
+  return Boolean(
+    message.sender_chat ||
+      isForwardedMessage(message) ||
+      hasSpoilerSupportedMedia(message) ||
+      hasNsfwTag(message),
+  );
+}
+
+function logSpoilerDebug(
+  message: TelegramMessage,
+  stage: string,
+  extra: Record<string, unknown> = {},
+): void {
+  const documentInfo = message.document ? extractDocumentInfo(message.document) : null;
+  console.log(
+    "spoiler debug",
+    JSON.stringify({
+      stage,
+      chat_id: message.chat.id,
+      chat_type: message.chat.type,
+      message_id: message.message_id,
+      media_group_id: message.media_group_id ?? null,
+      from_id: message.from?.id ?? null,
+      from_is_bot: message.from?.is_bot ?? null,
+      from_username: message.from?.username ?? null,
+      sender_chat_id: message.sender_chat?.id ?? null,
+      sender_chat_type: message.sender_chat?.type ?? null,
+      sender_chat_username: message.sender_chat?.username ?? null,
+      forward_origin_type: message.forward_origin?.type ?? null,
+      has_forward_origin: Boolean(message.forward_origin),
+      has_forward_from: Boolean(message.forward_from),
+      has_forward_from_chat: Boolean(message.forward_from_chat),
+      has_forward_sender_name: Boolean(message.forward_sender_name),
+      has_forward_message_id: Boolean(message.forward_from_message_id),
+      is_forwarded: isForwardedMessage(message),
+      has_spoiler_supported_media: hasSpoilerSupportedMedia(message),
+      has_nsfw_tag: hasNsfwTag(message),
+      media: {
+        photo_count: message.photo?.length ?? 0,
+        has_video: Boolean(message.video),
+        has_animation: Boolean(message.animation),
+        has_document: Boolean(message.document),
+        document_mime_type: documentInfo?.mimeType ?? null,
+      },
+      ...extra,
+    }),
+  );
 }
 
 function hasSpoilerSupportedMedia(message: TelegramMessage): boolean {
