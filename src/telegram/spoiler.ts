@@ -332,19 +332,26 @@ function sleep(ms: number): Promise<void> {
 }
 
 function shouldTriggerSpoiler(message: TelegramMessage): boolean {
-  if (isForwardedMessage(message) && hasMedia(message)) {
+  if (isForwardedMessage(message) && hasSpoilerSupportedMedia(message)) {
     return true;
   }
   const text = message.text || message.caption || "";
   return /#nsfw/i.test(text);
 }
 
-function hasMedia(message: TelegramMessage): boolean {
+function hasSpoilerSupportedMedia(message: TelegramMessage): boolean {
+  if (message.photo && message.photo.length > 0) {
+    return true;
+  }
+  if (message.video || message.animation) {
+    return true;
+  }
+  if (!message.document) {
+    return false;
+  }
+  const info = extractDocumentInfo(message.document);
   return Boolean(
-    (message.photo && message.photo.length > 0) ||
-      message.video ||
-      message.animation ||
-      message.document,
+    info.fileId && (looksLikeVideo(info.mimeType, info.fileName) || looksLikeAnimation(info.mimeType, info.fileName)),
   );
 }
 
