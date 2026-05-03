@@ -3,7 +3,7 @@ import {
   TELEGRAM_SAFE_LIMIT,
   TELEGRAM_TEXT_LIMIT,
 } from "../constants";
-import type { Env, InlineKeyboardMarkup } from "../types";
+import type { Env, InlineKeyboardMarkup, TelegramUser } from "../types";
 import { escapeHtml } from "../utils";
 
 export async function sendSummary(
@@ -275,11 +275,77 @@ export async function telegramApi(env: Env, method: string, payload: unknown): P
   }
 }
 
+/** 查询群成员状态，用于权限校验 */
+export async function getChatMember(
+  env: Env,
+  chatId: number,
+  userId: number,
+): Promise<{ status: string; user?: TelegramUser } | null> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(
+      `${TELEGRAM_API_BASE}/bot${token}/getChatMember?chat_id=${chatId}&user_id=${userId}`,
+    );
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { status: string; user?: TelegramUser };
+    };
+    if (!data.ok || !data.result) return null;
+    return data.result;
+  } catch {
+    return null;
+  }
+}
+
+/** 永久封禁群成员 */
+export async function banChatMember(
+  env: Env,
+  chatId: number,
+  userId: number,
+): Promise<void> {
+  await telegramApi(env, "banChatMember", { chat_id: chatId, user_id: userId });
+}
+
+/** 解除群成员封禁；onlyIfBanned 为 true 时仅在已封禁的情况下生效 */
+export async function unbanChatMember(
+  env: Env,
+  chatId: number,
+  userId: number,
+  onlyIfBanned = false,
+): Promise<void> {
+  await telegramApi(env, "unbanChatMember", {
+    chat_id: chatId,
+    user_id: userId,
+    only_if_banned: onlyIfBanned,
+  });
+}
+
+/** 获取 bot 自身信息（id/username），用于自踢防御 */
+export async function getMe(env: Env): Promise<{ id: number; username?: string } | null> {
+  const token = env.TG_BOT_TOKEN;
+  if (!token) return null;
+  try {
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${token}/getMe`);
+    const data = (await res.json()) as {
+      ok: boolean;
+      result?: { id: number; username?: string };
+    };
+    if (!data.ok || !data.result) return null;
+    return data.result;
+  } catch {
+    return null;
+  }
+}
+
 const BOT_COMMANDS = [
   { command: "start", description: "启动机器人" },
   { command: "help", description: "显示帮助信息" },
   { command: "status", description: "查看群组状态" },
   { command: "q", description: "引用卡片" },
+  { command: "kick", description: "踢出用户（允许重新加入）" },
+  { command: "ban", description: "永久封禁用户" },
+  { command: "unban", description: "解除封禁" },
 ];
 
 export async function registerBotCommands(env: Env): Promise<void> {

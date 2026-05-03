@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
   group_id INTEGER NOT NULL,
   sender_id INTEGER NOT NULL,
   sender_name TEXT DEFAULT '',
+  sender_username TEXT DEFAULT '',
   sender_is_bot INTEGER DEFAULT 0,
   content TEXT DEFAULT '',
   message_date TEXT NOT NULL,

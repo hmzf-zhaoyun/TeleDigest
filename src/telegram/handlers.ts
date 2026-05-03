@@ -54,6 +54,7 @@ import type {
 import {
   decodeCallbackValue,
   encodeCallbackValue,
+  extractMentionUsername,
   isOwnerUser,
   parseDuration,
   truncateLabel,
@@ -63,6 +64,7 @@ import {
   deleteGlobalLinuxdoToken,
   deleteScrapeGeoCode,
   ensureSchema,
+  findUserByUsernameInGroup,
   getAdminAction,
   getAllGroups,
   getGlobalLinuxdoToken,
@@ -88,7 +90,16 @@ import {
 import { parseSchedule } from "../schedule";
 import { runLeaderboardForGroup } from "../leaderboard";
 import { runSummaryForGroup } from "../summary";
-import { answerCallbackQuery, editMessage, registerBotCommands, sendMessage } from "./api";
+import {
+  answerCallbackQuery,
+  banChatMember,
+  editMessage,
+  getChatMember,
+  getMe,
+  registerBotCommands,
+  sendMessage,
+  unbanChatMember,
+} from "./api";
 import { handleSpoilerMessage } from "./spoiler";
 import { handleLinuxdoLink } from "./linuxdo";
 import { handleQuoteCommand } from "./quote";
@@ -243,6 +254,15 @@ async function handleCommand(
     case "q":
       await handleQuoteCommand(message, env);
       return;
+    case "kick":
+      await handleModerationCommand("kick", message, env);
+      return;
+    case "ban":
+      await handleModerationCommand("ban", message, env);
+      return;
+    case "unban":
+      await handleModerationCommand("unban", message, env);
+      return;
     default:
       return;
   }
@@ -256,11 +276,16 @@ function buildHelpText(isOwner: boolean): string {
     "/help - 显示帮助信息",
     "/status - 查看群组状态",
     "/q - 引用卡片",
+    "/kick @username - 踢出用户（允许重新加入）",
+    "/ban @username - 永久封禁用户",
+    "/unban @username - 解除封禁",
+    "",
+    "🔐 管理类命令：主人或群管理员可在群组中使用，需将本机器人设为群管理员并赋予“封禁用户”权限。",
     "",
   ];
 
   if (!isOwner) {
-    base.push("ℹ️ 请联系机器人主人进行配置。");
+    base.push("ℹ️ 群组配置请联系机器人主人。");
     return base.join("\n");
   }
 
@@ -328,6 +353,117 @@ async function handleStatus(chatId: number, env: Env, isOwner: boolean): Promise
     );
   }
   await sendMessage(env, chatId, lines.join("\n"));
+}
+
+
+type ModerationAction = "kick" | "ban" | "unban";
+
+type ModerationTarget = {
+  userId: number;
+  label: string;
+};
+
+async function handleModerationCommand(
+  action: ModerationAction,
+  message: TelegramMessage,
+  env: Env,
+): Promise<void> {
+  const chatId = message.chat.id;
+  const callerId = message.from?.id;
+
+  if (message.chat.type !== "group" && message.chat.type !== "supergroup") {
+    await sendMessage(env, chatId, "⚠️ 该命令仅在群组内可用");
+    return;
+  }
+  if (!callerId) {
+    return;
+  }
+
+  const isOwner = isOwnerUser(env, callerId);
+  if (!isOwner) {
+    const callerMember = await getChatMember(env, chatId, callerId);
+    const callerStatus = callerMember?.status;
+    if (callerStatus !== "creator" && callerStatus !== "administrator") {
+      await sendMessage(env, chatId, "⛔ 您没有权限执行此命令（仅主人或群管理员）");
+      return;
+    }
+  }
+
+  const target = await resolveModerationTarget(message, env);
+  if (!target) {
+    await sendMessage(
+      env,
+      chatId,
+      `⚠️ 请通过 /${action} @username 指定目标，或回复目标消息后发送 /${action}`,
+    );
+    return;
+  }
+
+  if (isOwnerUser(env, target.userId)) {
+    await sendMessage(env, chatId, "⛔ 不能对机器人主人执行该操作");
+    return;
+  }
+
+  const me = await getMe(env);
+  if (me && target.userId === me.id) {
+    await sendMessage(env, chatId, "⛔ 不能对机器人自身执行该操作");
+    return;
+  }
+
+  if (!isOwner) {
+    const targetMember = await getChatMember(env, chatId, target.userId);
+    const targetStatus = targetMember?.status;
+    if (targetStatus === "creator" || targetStatus === "administrator") {
+      await sendMessage(env, chatId, "⛔ 不能对其他管理员执行该操作");
+      return;
+    }
+  }
+
+  try {
+    if (action === "kick") {
+      await banChatMember(env, chatId, target.userId);
+      await unbanChatMember(env, chatId, target.userId, false);
+      await sendMessage(env, chatId, `✅ 已踢出 ${target.label}（允许重新加入）`);
+    } else if (action === "ban") {
+      await banChatMember(env, chatId, target.userId);
+      await sendMessage(env, chatId, `✅ 已永久封禁 ${target.label}`);
+    } else {
+      await unbanChatMember(env, chatId, target.userId, true);
+      await sendMessage(env, chatId, `✅ 已解除封禁 ${target.label}`);
+    }
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    await sendMessage(env, chatId, `❌ 操作失败: ${reason}`);
+  }
+}
+
+function buildUserLabel(user: { username?: string; first_name?: string; last_name?: string; id: number }): string {
+  if (user.username) return `@${user.username}`;
+  const fullName = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+  return fullName || String(user.id);
+}
+
+async function resolveModerationTarget(
+  message: TelegramMessage,
+  env: Env,
+): Promise<ModerationTarget | null> {
+  const replyTarget = message.reply_to_message?.from;
+  if (replyTarget?.id) {
+    return { userId: replyTarget.id, label: buildUserLabel(replyTarget) };
+  }
+
+  const entities = message.entities || [];
+  for (const entity of entities) {
+    if (entity.type === "text_mention" && entity.user?.id) {
+      return { userId: entity.user.id, label: buildUserLabel(entity.user) };
+    }
+  }
+
+  const username = message.text ? extractMentionUsername(message.text) : null;
+  if (!username) return null;
+  const found = await findUserByUsernameInGroup(env, message.chat.id, username);
+  if (!found) return null;
+  return { userId: found.user_id, label: `@${username}` };
 }
 
 

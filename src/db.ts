@@ -98,6 +98,11 @@ export async function ensureSchema(env: Env): Promise<void> {
         "ALTER TABLE group_messages ADD COLUMN sender_is_bot INTEGER DEFAULT 0"
       ).run();
     }
+    if (!msgColumns.has("sender_username")) {
+      await env.DB.prepare(
+        "ALTER TABLE group_messages ADD COLUMN sender_username TEXT DEFAULT ''"
+      ).run();
+    }
 
     await env.DB.prepare(
       "CREATE INDEX IF NOT EXISTS idx_messages_group_date ON group_messages(group_id, message_date)"
@@ -501,6 +506,9 @@ export async function saveGroupMessage(message: TelegramMessage, env: Env): Prom
     : buildSenderName(sender);
   const senderId = isChannelIdentity ? senderChat.id : (sender?.id || 0);
   const senderIsBot = isChannelIdentity ? 0 : (sender?.is_bot ? 1 : 0);
+  const senderUsername = isChannelIdentity
+    ? (senderChat.username || "")
+    : (sender?.username || "");
   const content = message.text || message.caption || "";
   const mediaType = detectMediaType(message);
   const hasMedia = mediaType !== null;
@@ -508,14 +516,15 @@ export async function saveGroupMessage(message: TelegramMessage, env: Env): Prom
 
   await env.DB.prepare(
     `INSERT OR IGNORE INTO group_messages
-     (message_id, group_id, sender_id, sender_name, sender_is_bot, content, message_date, has_media, media_type, is_summarized, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
+     (message_id, group_id, sender_id, sender_name, sender_username, sender_is_bot, content, message_date, has_media, media_type, is_summarized, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`
   )
     .bind(
       message.message_id,
       groupId,
       senderId,
       senderName,
+      senderUsername,
       senderIsBot,
       content,
       messageDate,
@@ -682,4 +691,27 @@ export async function purgeOldMessages(env: Env): Promise<number> {
     console.log(`[purge] deleted ${deleted} old summarized messages (before ${cutoff})`);
   }
   return deleted;
+}
+
+export async function findUserByUsernameInGroup(
+  env: Env,
+  groupId: number,
+  username: string,
+): Promise<{ user_id: number; sender_name: string } | null> {
+  const trimmed = username.trim().replace(/^@+/, "");
+  if (!trimmed) return null;
+  const row = await env.DB.prepare(
+    `SELECT sender_id, sender_name
+     FROM group_messages
+     WHERE group_id = ?
+       AND sender_username IS NOT NULL
+       AND sender_username != ''
+       AND LOWER(sender_username) = LOWER(?)
+     ORDER BY created_at DESC
+     LIMIT 1`
+  )
+    .bind(groupId, trimmed)
+    .first<{ sender_id: number; sender_name: string }>();
+  if (!row) return null;
+  return { user_id: row.sender_id, sender_name: row.sender_name };
 }

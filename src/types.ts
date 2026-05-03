@@ -73,6 +73,7 @@ export type TelegramEntity = {
   type: string;
   offset: number;
   length: number;
+  user?: TelegramUser;
 };
 
 export type TelegramChat = {
@@ -134,6 +135,7 @@ export type GroupMessageRow = {
   group_id: number;
   sender_id: number;
   sender_name: string;
+  sender_username?: string;
   sender_is_bot?: number;
   content: string;
   message_date: string;

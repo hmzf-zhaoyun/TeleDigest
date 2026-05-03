@@ -59,3 +59,13 @@ export function isOwnerUser(env: { TG_BOT_OWNER_ID?: string }, userId: number): 
     .filter((value) => Number.isFinite(value));
   return ids.includes(userId);
 }
+
+/**
+ * Extract the first @username token from text. Telegram usernames are 5-32 chars,
+ * starting with a letter, followed by letters/digits/underscores. Returns the
+ * username without the leading '@', or null when not found.
+ */
+export function extractMentionUsername(text: string): string | null {
+  const match = /@([a-zA-Z][\w]{4,31})/.exec(text);
+  return match ? match[1] : null;
+}
