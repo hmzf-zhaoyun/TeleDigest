@@ -5,6 +5,7 @@ import {
 } from "../constants";
 import type { Env, InlineKeyboardMarkup, TelegramUser } from "../types";
 import { escapeHtml } from "../utils";
+import { createSummaryTelegraphPage } from "./telegraph";
 
 export async function sendSummary(
   env: Env,
@@ -13,6 +14,21 @@ export async function sendSummary(
   summary: string,
 ): Promise<void> {
   const escapedGroup = escapeHtml(groupName);
+  const telegraphUrl = await createSummaryTelegraphPage(env, groupName, summary);
+  if (telegraphUrl) {
+    try {
+      await sendMessage(
+        env,
+        chatId,
+        `📊 <b>${escapedGroup}</b>\n\n📰 <a href="${escapeHtml(telegraphUrl)}">Telegraph 阅读总结</a>`,
+        { parse_mode: "HTML" },
+      );
+      return;
+    } catch {
+      // fallback below
+    }
+  }
+
   const escapedSummary = escapeHtml(summary);
   const html = `<blockquote expandable>📊 ${escapedGroup}\n\n${escapedSummary}</blockquote>`;
   const plain = `📊 ${groupName}\n\n${summary}`;
